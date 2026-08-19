@@ -31,20 +31,13 @@ import { QRCodeSVG } from "qrcode.react";
 import { api, ApiError } from "./api";
 import { loadSnapshot, saveSnapshot } from "./cache";
 import { canStartSwipe, resolveSwipe, type SwipeStart } from "./gestures";
+import { READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN, readerFontSizeFromStorage } from "./preferences";
 import type { Article, ArticleContent, Feed, LibraryView } from "./types";
 import { feedColor, fullDate, initials, relativeDate } from "./utils";
 
 type Stage = "checking" | "onboarding" | "ready" | "failed";
 
 const DEFAULT_VIEW: LibraryView = { kind: "inbox", label: "ข่าวทั้งหมด" };
-const READER_FONT_SIZE_MIN = 14;
-const READER_FONT_SIZE_MAX = 24;
-
-function initialReaderFontSize(): number {
-  const stored = Number(localStorage.getItem("leafline.readerFontSize"));
-  if (!Number.isFinite(stored)) return 16;
-  return Math.min(READER_FONT_SIZE_MAX, Math.max(READER_FONT_SIZE_MIN, stored));
-}
 
 function App() {
   const [stage, setStage] = useState<Stage>("checking");
@@ -62,7 +55,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [dark, setDark] = useState(() => localStorage.getItem("leafline.theme") === "dark");
-  const [readerFontSize, setReaderFontSize] = useState(initialReaderFontSize);
+  const [readerFontSize, setReaderFontSize] = useState(() => readerFontSizeFromStorage(localStorage.getItem("leafline.readerFontSize")));
 
   const notify = useCallback((message: string) => {
     setToast(message);
