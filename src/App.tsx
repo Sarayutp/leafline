@@ -23,6 +23,7 @@ import {
   Sparkles,
   Sun,
   Trash2,
+  Type,
   Unplug,
   X,
 } from "lucide-react";
@@ -36,6 +37,14 @@ import { feedColor, fullDate, initials, relativeDate } from "./utils";
 type Stage = "checking" | "onboarding" | "ready" | "failed";
 
 const DEFAULT_VIEW: LibraryView = { kind: "inbox", label: "ข่าวทั้งหมด" };
+const READER_FONT_SIZE_MIN = 14;
+const READER_FONT_SIZE_MAX = 24;
+
+function initialReaderFontSize(): number {
+  const stored = Number(localStorage.getItem("leafline.readerFontSize"));
+  if (!Number.isFinite(stored)) return 16;
+  return Math.min(READER_FONT_SIZE_MAX, Math.max(READER_FONT_SIZE_MIN, stored));
+}
 
 function App() {
   const [stage, setStage] = useState<Stage>("checking");
@@ -53,6 +62,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [dark, setDark] = useState(() => localStorage.getItem("leafline.theme") === "dark");
+  const [readerFontSize, setReaderFontSize] = useState(initialReaderFontSize);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -118,6 +128,11 @@ function App() {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     localStorage.setItem("leafline.theme", dark ? "dark" : "light");
   }, [dark]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--reader-font-size", `${readerFontSize}px`);
+    localStorage.setItem("leafline.readerFontSize", String(readerFontSize));
+  }, [readerFontSize]);
 
   const selected = useMemo(
     () => articles.find((article) => article.id === selectedId) || null,
@@ -348,6 +363,8 @@ function App() {
       {settingsOpen && (
         <SettingsModal
           feeds={feeds}
+          readerFontSize={readerFontSize}
+          onReaderFontSizeChange={setReaderFontSize}
           onClose={() => setSettingsOpen(false)}
           onRefresh={async () => {
             const result = await api.refreshFeeds();
@@ -736,8 +753,16 @@ function AddFeedModal({ categories, onClose, onAdded }: { categories: string[]; 
   );
 }
 
-function SettingsModal({ feeds, onClose, onRefresh, onDelete, onDisconnect }: { feeds: Feed[]; onClose: () => void; onRefresh: () => Promise<void>; onDelete: (feedId: string) => Promise<void>; onDisconnect: () => void }) {
-  const [tab, setTab] = useState<"devices" | "feeds">("devices");
+function SettingsModal({ feeds, readerFontSize, onReaderFontSizeChange, onClose, onRefresh, onDelete, onDisconnect }: {
+  feeds: Feed[];
+  readerFontSize: number;
+  onReaderFontSizeChange: (size: number) => void;
+  onClose: () => void;
+  onRefresh: () => Promise<void>;
+  onDelete: (feedId: string) => Promise<void>;
+  onDisconnect: () => void;
+}) {
+  const [tab, setTab] = useState<"devices" | "reading" | "feeds">("devices");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState("");
   const [syncToken, setSyncToken] = useState(api.token);
@@ -752,7 +777,7 @@ function SettingsModal({ feeds, onClose, onRefresh, onDelete, onDisconnect }: { 
   return (
     <Modal onClose={onClose} wide>
       <div className="modal-header"><div><span className="eyebrow">SETTINGS</span><h2>ตั้งค่า Leafline</h2></div><button className="icon-button" onClick={onClose}><X size={20} /></button></div>
-      <div className="settings-tabs"><button className={tab === "devices" ? "active" : ""} onClick={() => setTab("devices")}><Smartphone size={17} />อุปกรณ์และซิงก์</button><button className={tab === "feeds" ? "active" : ""} onClick={() => setTab("feeds")}><Inbox size={17} />แหล่งข่าว</button></div>
+      <div className="settings-tabs"><button className={tab === "devices" ? "active" : ""} onClick={() => setTab("devices")}><Smartphone size={17} />อุปกรณ์</button><button className={tab === "reading" ? "active" : ""} onClick={() => setTab("reading")}><Type size={17} />การอ่าน</button><button className={tab === "feeds" ? "active" : ""} onClick={() => setTab("feeds")}><Inbox size={17} />แหล่งข่าว</button></div>
       {tab === "devices" ? (
         <div className="pairing-layout">
           <div className="qr-card"><QRCodeSVG value={pairingLink} size={174} bgColor="transparent" fgColor="currentColor" level="M" /><span>สแกนด้วยกล้องของอุปกรณ์ใหม่</span></div>
@@ -776,6 +801,12 @@ function SettingsModal({ feeds, onClose, onRefresh, onDelete, onDisconnect }: { 
             </div>
           </div>
         </div>
+      ) : tab === "reading" ? (
+        <section className="reader-font-setting">
+          <div className="reader-font-setting-head"><Type size={19} /><div><strong>ขนาดตัวอักษรบทความ</strong><small>บันทึกเฉพาะอุปกรณ์นี้ ไม่ซิงก์ทับเครื่องอื่น</small></div><output>{readerFontSize}px</output></div>
+          <label className="reader-font-slider"><span aria-hidden="true">ก</span><input type="range" min={READER_FONT_SIZE_MIN} max={READER_FONT_SIZE_MAX} step="1" value={readerFontSize} onChange={(event) => onReaderFontSizeChange(Number(event.target.value))} aria-label="ขนาดตัวอักษรบทความบนอุปกรณ์นี้" /><span aria-hidden="true">ก</span></label>
+          <p className="reader-font-preview" style={{ fontSize: readerFontSize }}>ตัวอย่างเนื้อหาข่าว อ่านสบายตาในขนาดที่เหมาะกับหน้าจอนี้</p>
+        </section>
       ) : (
         <div className="feed-settings">
           <div className="feed-settings-head"><p>{feeds.length} แหล่งข่าว · อัปเดตอัตโนมัติตาม Cron</p><button className="secondary-button" disabled={busy} onClick={() => { setBusy(true); void onRefresh().finally(() => setBusy(false)); }}><RefreshCw className={busy ? "spin" : ""} size={16} />อัปเดตตอนนี้</button></div>
