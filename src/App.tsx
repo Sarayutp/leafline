@@ -206,7 +206,7 @@ function App() {
 
     const openNextArticle = (event: KeyboardEvent) => {
       if (
-        event.key !== "ArrowDown" ||
+        (event.key !== "ArrowDown" && event.key !== "ArrowRight") ||
         event.repeat ||
         event.altKey ||
         event.ctrlKey ||
@@ -653,7 +653,7 @@ function Reader({ article, open, hasNext, hasPrevious, onNext, onPrevious, onClo
     <aside
       ref={readerRef}
       className={`reader ${open ? "open" : ""} ${swipeMotion ? `swipe-${swipeMotion}` : ""}`}
-      aria-keyshortcuts="ArrowDown"
+      aria-keyshortcuts="ArrowDown ArrowRight"
       onPointerDown={beginSwipe}
       onPointerUp={finishSwipe}
       onPointerCancel={() => { swipeStartRef.current = null; }}
@@ -662,7 +662,7 @@ function Reader({ article, open, hasNext, hasPrevious, onNext, onPrevious, onClo
         <>
           <div className="reader-toolbar">
             <button className="icon-button mobile-only" onClick={onClose}><ArrowLeft size={20} /></button>
-            {hasNext && <span className="reader-shortcut-hint"><kbd>↓</kbd>ข่าวถัดไป</span>}
+            {hasNext && <span className="reader-shortcut-hint"><kbd>↓</kbd><kbd>→</kbd>ข่าวถัดไป</span>}
             <div className="reader-toolbar-spacer" />
             <button className={`icon-button ${article.isRead ? "active" : ""}`} onClick={onToggleRead} title={article.isRead ? "ทำเป็นยังไม่อ่าน" : "ทำเป็นอ่านแล้ว"}><CheckCheck size={19} /></button>
             <button className={`icon-button ${article.isStarred ? "active" : ""}`} onClick={onToggleStar} title="บันทึก"><Bookmark size={19} /></button>
