@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bookmark,
@@ -512,8 +512,14 @@ function ArticleRow({ article, selected, onSelect, onStar }: { article: Article;
 }
 
 function Reader({ article, open, onClose, onToggleRead, onToggleStar }: { article: Article | null; open: boolean; onClose: () => void; onToggleRead: () => void; onToggleStar: () => void }) {
+  const readerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    readerRef.current?.scrollTo({ top: 0 });
+  }, [article?.id]);
+
   return (
-    <aside className={`reader ${open ? "open" : ""}`}>
+    <aside ref={readerRef} className={`reader ${open ? "open" : ""}`}>
       {article ? (
         <>
           <div className="reader-toolbar">
