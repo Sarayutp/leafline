@@ -1,0 +1,2 @@
+# คัดลอกไฟล์นี้เป็น .dev.vars สำหรับทดสอบในเครื่อง
+SETUP_SECRET="choose-a-long-random-secret"
