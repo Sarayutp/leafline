@@ -8,6 +8,7 @@
     "dev:worker": "wrangler dev --local --persist-to .wrangler/state",
     "build": "tsc -b && vite build",
     "check": "tsc -b",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "preview": "vite preview",
     "deploy:worker": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply leafline-db --local",

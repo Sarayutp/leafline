@@ -29,6 +29,7 @@ import {
 import { QRCodeSVG } from "qrcode.react";
 import { api, ApiError } from "./api";
 import { loadSnapshot, saveSnapshot } from "./cache";
+import { canStartSwipe, resolveSwipe, type SwipeStart } from "./gestures";
 import type { Article, ArticleContent, Feed, LibraryView } from "./types";
 import { feedColor, fullDate, initials, relativeDate } from "./utils";
 
@@ -141,6 +142,12 @@ function App() {
     });
   }, [articles, hideRead, search, selectedId, view]);
 
+  const selectedVisibleIndex = selectedId
+    ? visibleArticles.findIndex((article) => article.id === selectedId)
+    : -1;
+  const nextArticle = visibleArticles[selectedVisibleIndex + 1] || null;
+  const previousArticle = selectedVisibleIndex > 0 ? visibleArticles[selectedVisibleIndex - 1] : null;
+
   const chooseArticle = (article: Article) => {
     setSelectedId(article.id);
     setReaderOpen(true);
@@ -210,10 +217,6 @@ function App() {
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
 
-      const currentIndex = selectedId
-        ? visibleArticles.findIndex((article) => article.id === selectedId)
-        : -1;
-      const nextArticle = visibleArticles[currentIndex + 1];
       if (!nextArticle) return;
 
       event.preventDefault();
@@ -222,7 +225,7 @@ function App() {
 
     window.addEventListener("keydown", openNextArticle);
     return () => window.removeEventListener("keydown", openNextArticle);
-  }, [addOpen, selectedId, settingsOpen, stage, visibleArticles]);
+  }, [addOpen, nextArticle, settingsOpen, stage]);
 
   if (stage === "checking") return <Splash />;
   if (stage === "onboarding") return <Onboarding onConnected={() => void loadLibrary()} dark={dark} setDark={setDark} />;
@@ -314,7 +317,10 @@ function App() {
       <Reader
         article={selected}
         open={readerOpen}
-        hasNext={Boolean(selectedId && visibleArticles.findIndex((article) => article.id === selectedId) < visibleArticles.length - 1)}
+        hasNext={Boolean(selected && nextArticle)}
+        hasPrevious={Boolean(selected && previousArticle)}
+        onNext={() => nextArticle && chooseArticle(nextArticle)}
+        onPrevious={() => previousArticle && chooseArticle(previousArticle)}
         onClose={() => setReaderOpen(false)}
         onToggleRead={() => selected && void changeArticleState(selected.id, { isRead: !selected.isRead })}
         onToggleStar={() => selected && void changeArticleState(selected.id, { isStarred: !selected.isStarred })}
@@ -551,10 +557,13 @@ function ArticleRow({ article, selected, onSelect, onStar }: { article: Article;
   );
 }
 
-function Reader({ article, open, hasNext, onClose, onToggleRead, onToggleStar, onContentLoaded }: {
+function Reader({ article, open, hasNext, hasPrevious, onNext, onPrevious, onClose, onToggleRead, onToggleStar, onContentLoaded }: {
   article: Article | null;
   open: boolean;
   hasNext: boolean;
+  hasPrevious: boolean;
+  onNext: () => void;
+  onPrevious: () => void;
   onClose: () => void;
   onToggleRead: () => void;
   onToggleStar: () => void;
@@ -564,6 +573,8 @@ function Reader({ article, open, hasNext, onClose, onToggleRead, onToggleStar, o
   const [content, setContent] = useState<ArticleContent | null>(null);
   const [contentLoading, setContentLoading] = useState(false);
   const [contentError, setContentError] = useState("");
+  const [swipeMotion, setSwipeMotion] = useState<"next" | "previous" | null>(null);
+  const swipeStartRef = useRef<SwipeStart | null>(null);
 
   useEffect(() => {
     readerRef.current?.scrollTo({ top: 0 });
@@ -594,11 +605,59 @@ function Reader({ article, open, hasNext, onClose, onToggleRead, onToggleStar, o
     };
   }, [article?.id, onContentLoaded]);
 
+  useEffect(() => {
+    if (!swipeMotion) return;
+    const timer = window.setTimeout(() => setSwipeMotion(null), 260);
+    return () => window.clearTimeout(timer);
+  }, [article?.id, swipeMotion]);
+
+  const beginSwipe = (event: React.PointerEvent<HTMLElement>) => {
+    if (swipeMotion) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!canStartSwipe({
+      pointerType: event.pointerType,
+      isPrimary: event.isPrimary,
+      x: event.clientX,
+      viewportWidth: window.innerWidth,
+      interactiveTarget: Boolean(target?.closest('a, button, input, textarea, select, [contenteditable="true"]')),
+    })) return;
+
+    swipeStartRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      startedAt: Date.now(),
+    };
+  };
+
+  const finishSwipe = (event: React.PointerEvent<HTMLElement>) => {
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (!start || start.pointerId !== event.pointerId) return;
+
+    const direction = resolveSwipe(start, { x: event.clientX, y: event.clientY, endedAt: Date.now() });
+
+    if (direction === "next" && hasNext) {
+      setSwipeMotion("next");
+      onNext();
+    } else if (direction === "previous" && hasPrevious) {
+      setSwipeMotion("previous");
+      onPrevious();
+    }
+  };
+
   const fullContent = content?.contentHtml;
   const heroImage = content?.imageUrl || article?.imageUrl;
 
   return (
-    <aside ref={readerRef} className={`reader ${open ? "open" : ""}`} aria-keyshortcuts="ArrowDown">
+    <aside
+      ref={readerRef}
+      className={`reader ${open ? "open" : ""} ${swipeMotion ? `swipe-${swipeMotion}` : ""}`}
+      aria-keyshortcuts="ArrowDown"
+      onPointerDown={beginSwipe}
+      onPointerUp={finishSwipe}
+      onPointerCancel={() => { swipeStartRef.current = null; }}
+    >
       {article ? (
         <>
           <div className="reader-toolbar">
