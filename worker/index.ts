@@ -1,5 +1,5 @@
 import { fetchFeed, type ParsedFeed } from "./rss";
-import { extractArticleContent } from "./content";
+import { extractArticleContent, sanitizeArticleHtml } from "./content";
 import { constantTimeEqual, randomToken, sha256Hex, validatePublicFeedUrl } from "./security";
 
 interface Env {
@@ -49,6 +49,7 @@ interface ArticleContentRow {
   content_html: string | null;
   content_source: string | null;
   content_fetched_at: string | null;
+  feed_content_html: string | null;
 }
 
 class ApiProblem extends Error {
@@ -167,15 +168,16 @@ async function storeParsedFeed(env: Env, feedId: string, sourceUrl: string, cate
     const articleId = (await sha256Hex(`${feedId}:${article.guid || article.url}`)).slice(0, 40);
     statements.push(
       env.DB.prepare(
-        `INSERT INTO articles (id, feed_id, guid, url, title, summary, author, image_url, published_at, fetched_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        `INSERT INTO articles (id, feed_id, guid, url, title, summary, author, image_url, published_at, fetched_at, feed_content_html)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
            url = excluded.url,
            title = excluded.title,
            summary = excluded.summary,
            author = excluded.author,
            image_url = excluded.image_url,
-           published_at = COALESCE(excluded.published_at, articles.published_at)`,
+           published_at = COALESCE(excluded.published_at, articles.published_at),
+           feed_content_html = excluded.feed_content_html`,
       ).bind(
         articleId,
         feedId,
@@ -187,6 +189,7 @@ async function storeParsedFeed(env: Env, feedId: string, sourceUrl: string, cate
         article.imageUrl,
         article.publishedAt,
         now,
+        article.feedContentHtml,
       ),
     );
   }
@@ -306,7 +309,7 @@ async function listArticles(url: URL, env: Env): Promise<Response> {
 
 async function getArticleContent(env: Env, articleId: string): Promise<Response> {
   const article = await env.DB.prepare(
-    `SELECT a.id, a.url, a.image_url, a.content_html, a.content_source, a.content_fetched_at
+    `SELECT a.id, a.url, a.image_url, a.content_html, a.content_source, a.content_fetched_at, a.feed_content_html
      FROM articles a
      JOIN feeds f ON f.id = a.feed_id
      WHERE a.id = ?1 AND f.enabled = 1`,
@@ -322,27 +325,39 @@ async function getArticleContent(env: Env, articleId: string): Promise<Response>
     });
   }
 
-  let extracted;
+  let extracted = null;
+  let extractionError = "";
   try {
     extracted = await extractArticleContent(article.url);
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message : "ดึงเนื้อหาเต็มไม่สำเร็จ";
-    throw new ApiProblem(422, message);
+    extractionError = cause instanceof Error ? cause.message : "ดึงเนื้อหาเต็มไม่สำเร็จ";
   }
 
-  if (!extracted) {
+  let contentHtml = extracted?.contentHtml || null;
+  let contentSource: string | null = extracted?.source || null;
+  if (!contentHtml && article.feed_content_html) {
+    try {
+      contentHtml = await sanitizeArticleHtml(article.feed_content_html, article.url);
+      if (contentHtml) contentSource = "rss";
+    } catch (cause) {
+      extractionError ||= cause instanceof Error ? cause.message : "จัดรูปแบบเนื้อหาจาก RSS ไม่สำเร็จ";
+    }
+  }
+
+  if (!contentHtml) {
+    if (extractionError) throw new ApiProblem(422, extractionError);
     return json({ contentHtml: null, contentSource: null, imageUrl: article.image_url, fetchedAt: null });
   }
 
   const now = isoNow();
-  const imageUrl = article.image_url || extracted.imageUrl;
+  const imageUrl = article.image_url || extracted?.imageUrl || null;
   await env.DB.prepare(
     `UPDATE articles
      SET content_html = ?1, content_source = ?2, content_fetched_at = ?3, image_url = ?4
      WHERE id = ?5`,
-  ).bind(extracted.contentHtml, extracted.source, now, imageUrl, articleId).run();
+  ).bind(contentHtml, contentSource, now, imageUrl, articleId).run();
 
-  return json({ contentHtml: extracted.contentHtml, contentSource: extracted.source, imageUrl, fetchedAt: now });
+  return json({ contentHtml, contentSource, imageUrl, fetchedAt: now });
 }
 
 async function updateArticleState(request: Request, env: Env, articleId: string): Promise<Response> {

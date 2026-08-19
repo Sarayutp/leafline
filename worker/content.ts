@@ -11,6 +11,37 @@ const CONTENT_END = "<!--leafline-content-end-->";
 const MAX_PAGE_SIZE = 2_000_000;
 const MAX_CONTENT_SIZE = 180_000;
 
+const ARTICLE_CONTENT_SELECTORS = [
+  '[itemprop="articleBody"]',
+  "article .entry-content",
+  "article .post-content",
+  "main.post-content",
+  "main .post-content",
+  "article .td-post-content",
+  ".single-content .entry-content",
+  ".elementor-widget-theme-post-content",
+  "article .field--name-body",
+  "article .article-content",
+  "main .article-content",
+  "article .article-body",
+  "main .article-body",
+  "article .post__content",
+  "main .post__content",
+  ".wp-block-post-content",
+];
+
+const REMOVE_FROM_ARTICLE_SELECTORS = [
+  "#wpdevar_comment_1",
+  "ul.seed-social",
+  "ins.adsbygoogle",
+  ".sharedaddy",
+  ".jp-relatedposts",
+  ".yarpp-related",
+  ".post-tags",
+  ".author-box",
+  ".field__label",
+];
+
 const ALLOWED_ELEMENTS = new Set([
   "p",
   "h2",
@@ -26,6 +57,8 @@ const ALLOWED_ELEMENTS = new Set([
   "b",
   "em",
   "i",
+  "sup",
+  "sub",
   "a",
   "img",
   "figure",
@@ -63,11 +96,6 @@ const DROP_WITH_CONTENT = new Set([
   "noscript",
   "template",
 ]);
-
-function isImodHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return normalized === "iphonemod.net" || normalized.endsWith(".iphonemod.net");
-}
 
 function safeHttpUrl(value: string | null, baseUrl: URL): string | null {
   if (!value) return null;
@@ -144,9 +172,56 @@ function cleanElement(element: Element, baseUrl: URL): void {
   }
 }
 
+export async function sanitizeArticleHtml(rawHtml: string, articleUrl: string): Promise<string | null> {
+  if (!rawHtml.trim()) return null;
+  if (rawHtml.length > MAX_PAGE_SIZE) throw new Error("เนื้อหาจาก RSS มีขนาดใหญ่เกินไป");
+
+  const baseUrl = new URL(articleUrl);
+  const rootId = "leafline-rss-content";
+  const contentSelector = rawHtml.includes("field--name-body")
+    ? `#${rootId} .field--name-body .field-item`
+    : `#${rootId}`;
+  let foundContent = false;
+  let rewriter = new HTMLRewriter().on(contentSelector, {
+    element(element) {
+      if (foundContent) return;
+      foundContent = true;
+      element.before(CONTENT_START, { html: true });
+      element.after(CONTENT_END, { html: true });
+    },
+  });
+  for (const selector of REMOVE_FROM_ARTICLE_SELECTORS) {
+    rewriter = rewriter.on(selector, {
+      element(element) {
+        element.remove();
+      },
+    });
+  }
+
+  const transformed = rewriter
+    .on("*", {
+      element(element) {
+        cleanElement(element, baseUrl);
+      },
+    })
+    .transform(new Response(`<div id="${rootId}">${rawHtml}</div>`, {
+      headers: { "content-type": "text/html;charset=UTF-8" },
+    }));
+
+  const cleanedPage = await transformed.text();
+  if (!foundContent) return null;
+  const start = cleanedPage.indexOf(CONTENT_START);
+  const end = cleanedPage.indexOf(CONTENT_END, start + CONTENT_START.length);
+  if (start < 0 || end < 0) throw new Error("จัดรูปแบบเนื้อหาจาก RSS ไม่สำเร็จ");
+
+  const contentHtml = cleanedPage.slice(start + CONTENT_START.length, end).trim();
+  if (!contentHtml) return null;
+  if (contentHtml.length > MAX_CONTENT_SIZE) throw new Error("เนื้อหาบทความยาวเกินไป");
+  return contentHtml;
+}
+
 export async function extractArticleContent(articleUrl: string): Promise<ExtractedArticleContent | null> {
   const requestedUrl = validatePublicFeedUrl(articleUrl);
-  if (!isImodHost(requestedUrl.hostname)) return null;
 
   const { response, finalUrl } = await fetchPublicPage(requestedUrl);
   if (!response.ok) throw new Error(`หน้าบทความตอบกลับ ${response.status}`);
@@ -160,35 +235,36 @@ export async function extractArticleContent(articleUrl: string): Promise<Extract
 
   let foundContent = false;
   let imageUrl: string | null = null;
-  const transformed = new HTMLRewriter()
+  const contentHandler: HTMLRewriterElementContentHandlers = {
+    element(element) {
+      if (foundContent) return;
+      foundContent = true;
+      element.before(CONTENT_START, { html: true });
+      element.after(CONTENT_END, { html: true });
+    },
+  };
+  const removeHandler: HTMLRewriterElementContentHandlers = {
+    element(element) {
+      element.remove();
+    },
+  };
+
+  let rewriter = new HTMLRewriter()
     .on('meta[property="og:image"]', {
       element(element) {
         imageUrl ||= safeHttpUrl(element.getAttribute("content"), finalUrl);
       },
     })
-    .on('div.entry-content[itemprop="articleBody"]', {
+    .on('meta[name="twitter:image"]', {
       element(element) {
-        foundContent = true;
-        element.before(CONTENT_START, { html: true });
-        element.after(CONTENT_END, { html: true });
+        imageUrl ||= safeHttpUrl(element.getAttribute("content"), finalUrl);
       },
-    })
-    .on("#wpdevar_comment_1", {
-      element(element) {
-        element.remove();
-      },
-    })
-    .on("ul.seed-social", {
-      element(element) {
-        element.remove();
-      },
-    })
-    .on("ins.adsbygoogle", {
-      element(element) {
-        element.remove();
-      },
-    })
-    .on("*", {
+    });
+
+  for (const selector of ARTICLE_CONTENT_SELECTORS) rewriter = rewriter.on(selector, contentHandler);
+  for (const selector of REMOVE_FROM_ARTICLE_SELECTORS) rewriter = rewriter.on(selector, removeHandler);
+
+  const transformed = rewriter.on("*", {
       element(element) {
         cleanElement(element, finalUrl);
       },
@@ -196,7 +272,7 @@ export async function extractArticleContent(articleUrl: string): Promise<Extract
     .transform(new Response(pageHtml, { headers: { "content-type": "text/html;charset=UTF-8" } }));
 
   const cleanedPage = await transformed.text();
-  if (!foundContent) throw new Error("ไม่พบส่วนเนื้อหาบทความของ iMoD");
+  if (!foundContent) return null;
   const start = cleanedPage.indexOf(CONTENT_START);
   const end = cleanedPage.indexOf(CONTENT_END, start + CONTENT_START.length);
   if (start < 0 || end < 0) throw new Error("จัดรูปแบบเนื้อหาบทความไม่สำเร็จ");

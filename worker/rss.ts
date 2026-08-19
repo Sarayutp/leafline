@@ -6,10 +6,13 @@ export interface ParsedArticle {
   url: string;
   title: string;
   summary: string;
+  feedContentHtml: string | null;
   author: string | null;
   imageUrl: string | null;
   publishedAt: string | null;
 }
+
+const MAX_FEED_CONTENT_SIZE = 180_000;
 
 export interface ParsedFeed {
   title: string;
@@ -145,6 +148,7 @@ function normalizeItem(itemValue: unknown): ParsedArticle | null {
     url,
     title: title.slice(0, 600),
     summary: plainText(rawContent),
+    feedContentHtml: rawContent ? rawContent.slice(0, MAX_FEED_CONTENT_SIZE) : null,
     author: author?.slice(0, 200) || null,
     imageUrl: imageOf(item, rawContent),
     publishedAt,
