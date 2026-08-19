@@ -145,6 +145,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 .reader { position: relative; min-width: 0; min-height: 0; height: 100%; max-height: 100dvh; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; background: var(--surface-strong); scrollbar-width: thin; }
 .reader-toolbar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; gap: 4px; min-height: 55px; padding: 8px 22px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-strong) 92%, transparent); backdrop-filter: blur(14px); }
+.reader-shortcut-hint { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 9px; }
+.reader-shortcut-hint kbd { display: grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted); background: var(--surface); box-shadow: 0 1px 2px rgb(30 45 31 / 7%); font-family: "Manrope", sans-serif; font-size: 12px; }
 .reader-toolbar-spacer { flex: 1; }
 .reader-hero { display: block; width: calc(100% - 72px); max-width: 720px; height: clamp(210px, 30vw, 360px); margin: 34px auto 0; border-radius: 17px; object-fit: cover; background: var(--surface-soft); box-shadow: 0 13px 38px rgb(27 45 27 / 10%); }
 .reader-content { width: min(680px, calc(100% - 72px)); margin: 42px auto 80px; }
@@ -311,6 +313,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .reader { position: fixed; inset: 0; z-index: 60; width: 100%; height: 100dvh; max-height: 100dvh; transform: translateX(105%); transition: transform .24s ease; }
   .reader.open { transform: translateX(0); }
   .reader-toolbar { padding: 8px 12px; }
+  .reader-shortcut-hint { display: none; }
   .reader-hero { width: calc(100% - 28px); height: 230px; margin-top: 15px; border-radius: 13px; }
   .reader-content { width: calc(100% - 38px); margin-top: 28px; }
   .reader-content h1 { font-size: 27px; }

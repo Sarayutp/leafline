@@ -194,6 +194,36 @@ function App() {
     )));
   }, []);
 
+  useEffect(() => {
+    if (stage !== "ready" || addOpen || settingsOpen) return;
+
+    const openNextArticle = (event: KeyboardEvent) => {
+      if (
+        event.key !== "ArrowDown" ||
+        event.repeat ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) return;
+
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+
+      const currentIndex = selectedId
+        ? visibleArticles.findIndex((article) => article.id === selectedId)
+        : -1;
+      const nextArticle = visibleArticles[currentIndex + 1];
+      if (!nextArticle) return;
+
+      event.preventDefault();
+      chooseArticle(nextArticle);
+    };
+
+    window.addEventListener("keydown", openNextArticle);
+    return () => window.removeEventListener("keydown", openNextArticle);
+  }, [addOpen, selectedId, settingsOpen, stage, visibleArticles]);
+
   if (stage === "checking") return <Splash />;
   if (stage === "onboarding") return <Onboarding onConnected={() => void loadLibrary()} dark={dark} setDark={setDark} />;
   if (stage === "failed") {
@@ -284,6 +314,7 @@ function App() {
       <Reader
         article={selected}
         open={readerOpen}
+        hasNext={Boolean(selectedId && visibleArticles.findIndex((article) => article.id === selectedId) < visibleArticles.length - 1)}
         onClose={() => setReaderOpen(false)}
         onToggleRead={() => selected && void changeArticleState(selected.id, { isRead: !selected.isRead })}
         onToggleStar={() => selected && void changeArticleState(selected.id, { isStarred: !selected.isStarred })}
@@ -520,9 +551,10 @@ function ArticleRow({ article, selected, onSelect, onStar }: { article: Article;
   );
 }
 
-function Reader({ article, open, onClose, onToggleRead, onToggleStar, onContentLoaded }: {
+function Reader({ article, open, hasNext, onClose, onToggleRead, onToggleStar, onContentLoaded }: {
   article: Article | null;
   open: boolean;
+  hasNext: boolean;
   onClose: () => void;
   onToggleRead: () => void;
   onToggleStar: () => void;
@@ -566,11 +598,12 @@ function Reader({ article, open, onClose, onToggleRead, onToggleStar, onContentL
   const heroImage = content?.imageUrl || article?.imageUrl;
 
   return (
-    <aside ref={readerRef} className={`reader ${open ? "open" : ""}`}>
+    <aside ref={readerRef} className={`reader ${open ? "open" : ""}`} aria-keyshortcuts="ArrowDown">
       {article ? (
         <>
           <div className="reader-toolbar">
             <button className="icon-button mobile-only" onClick={onClose}><ArrowLeft size={20} /></button>
+            {hasNext && <span className="reader-shortcut-hint"><kbd>↓</kbd>ข่าวถัดไป</span>}
             <div className="reader-toolbar-spacer" />
             <button className={`icon-button ${article.isRead ? "active" : ""}`} onClick={onToggleRead} title={article.isRead ? "ทำเป็นยังไม่อ่าน" : "ทำเป็นอ่านแล้ว"}><CheckCheck size={19} /></button>
             <button className={`icon-button ${article.isStarred ? "active" : ""}`} onClick={onToggleStar} title="บันทึก"><Bookmark size={19} /></button>
