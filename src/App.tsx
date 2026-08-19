@@ -29,7 +29,7 @@ import {
 import { QRCodeSVG } from "qrcode.react";
 import { api, ApiError } from "./api";
 import { loadSnapshot, saveSnapshot } from "./cache";
-import type { Article, Feed, LibraryView } from "./types";
+import type { Article, ArticleContent, Feed, LibraryView } from "./types";
 import { feedColor, fullDate, initials, relativeDate } from "./utils";
 
 type Stage = "checking" | "onboarding" | "ready" | "failed";
@@ -186,6 +186,14 @@ function App() {
     });
   };
 
+  const updateLoadedContent = useCallback((articleId: string, content: ArticleContent) => {
+    setArticles((current) => current.map((article) => (
+      article.id === articleId
+        ? { ...article, hasContent: Boolean(content.contentHtml), imageUrl: content.imageUrl || article.imageUrl }
+        : article
+    )));
+  }, []);
+
   if (stage === "checking") return <Splash />;
   if (stage === "onboarding") return <Onboarding onConnected={() => void loadLibrary()} dark={dark} setDark={setDark} />;
   if (stage === "failed") {
@@ -279,6 +287,7 @@ function App() {
         onClose={() => setReaderOpen(false)}
         onToggleRead={() => selected && void changeArticleState(selected.id, { isRead: !selected.isRead })}
         onToggleStar={() => selected && void changeArticleState(selected.id, { isStarred: !selected.isStarred })}
+        onContentLoaded={updateLoadedContent}
       />
 
       <nav className="mobile-nav">
@@ -511,12 +520,50 @@ function ArticleRow({ article, selected, onSelect, onStar }: { article: Article;
   );
 }
 
-function Reader({ article, open, onClose, onToggleRead, onToggleStar }: { article: Article | null; open: boolean; onClose: () => void; onToggleRead: () => void; onToggleStar: () => void }) {
+function Reader({ article, open, onClose, onToggleRead, onToggleStar, onContentLoaded }: {
+  article: Article | null;
+  open: boolean;
+  onClose: () => void;
+  onToggleRead: () => void;
+  onToggleStar: () => void;
+  onContentLoaded: (articleId: string, content: ArticleContent) => void;
+}) {
   const readerRef = useRef<HTMLElement>(null);
+  const [content, setContent] = useState<ArticleContent | null>(null);
+  const [contentLoading, setContentLoading] = useState(false);
+  const [contentError, setContentError] = useState("");
 
   useEffect(() => {
     readerRef.current?.scrollTo({ top: 0 });
-  }, [article?.id]);
+    setContent(null);
+    setContentError("");
+    if (!article) {
+      setContentLoading(false);
+      return;
+    }
+
+    let current = true;
+    setContentLoading(true);
+    void api.articleContent(article.id)
+      .then((result) => {
+        if (!current) return;
+        setContent(result);
+        onContentLoaded(article.id, result);
+      })
+      .catch(() => {
+        if (current) setContentError("ยังโหลดเนื้อหาเต็มไม่ได้ สามารถอ่านต่อจากเว็บไซต์ต้นฉบับ");
+      })
+      .finally(() => {
+        if (current) setContentLoading(false);
+      });
+
+    return () => {
+      current = false;
+    };
+  }, [article?.id, onContentLoaded]);
+
+  const fullContent = content?.contentHtml;
+  const heroImage = content?.imageUrl || article?.imageUrl;
 
   return (
     <aside ref={readerRef} className={`reader ${open ? "open" : ""}`}>
@@ -529,12 +576,18 @@ function Reader({ article, open, onClose, onToggleRead, onToggleStar }: { articl
             <button className={`icon-button ${article.isStarred ? "active" : ""}`} onClick={onToggleStar} title="บันทึก"><Bookmark size={19} /></button>
             <a className="icon-button" href={article.url} target="_blank" rel="noreferrer" title="เปิดต้นฉบับ"><ExternalLink size={19} /></a>
           </div>
-          {article.imageUrl && <img className="reader-hero" src={article.imageUrl} alt="" referrerPolicy="no-referrer" />}
+          {!fullContent && heroImage && <img className="reader-hero" src={heroImage} alt="" referrerPolicy="no-referrer" />}
           <div className="reader-content">
             <div className="reader-source"><span className="feed-avatar" style={{ background: feedColor(article.feedTitle) }}>{initials(article.feedTitle)}</span><div><strong>{article.feedTitle}</strong><span>{fullDate(article.publishedAt || article.fetchedAt)}</span></div></div>
             <h1>{article.title}</h1>
             {article.author && <p className="byline">โดย {article.author}</p>}
-            <p className="reader-summary">{article.summary || "ฟีดนี้ไม่มีเนื้อหาสรุป สามารถเปิดบทความต้นฉบับเพื่ออ่านต่อได้"}</p>
+            {contentLoading && <div className="reader-content-loading"><LoaderCircle className="spin" size={17} />กำลังโหลดเนื้อหาเต็ม…</div>}
+            {fullContent ? (
+              <div className="reader-article-body" dangerouslySetInnerHTML={{ __html: fullContent }} />
+            ) : (
+              <p className="reader-summary">{article.summary || "ฟีดนี้ไม่มีเนื้อหาสรุป สามารถเปิดบทความต้นฉบับเพื่ออ่านต่อได้"}</p>
+            )}
+            {contentError && <p className="reader-content-error">{contentError}</p>}
             <a className="primary-button read-original" href={article.url} target="_blank" rel="noreferrer">อ่านบทความต้นฉบับ<ExternalLink size={17} /></a>
           </div>
         </>

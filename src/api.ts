@@ -1,4 +1,4 @@
-import type { Article, Feed, FeedResponse, SetupResponse, SetupStatus } from "./types";
+import type { Article, ArticleContent, Feed, FeedResponse, SetupResponse, SetupStatus } from "./types";
 
 const API_URL_KEY = "leafline.apiUrl";
 const TOKEN_KEY = "leafline.syncToken";
@@ -106,6 +106,10 @@ class LeaflineApi {
   async articles(): Promise<Article[]> {
     const result = await this.request<{ articles: Article[] }>("/api/articles?limit=500");
     return result.articles;
+  }
+
+  articleContent(articleId: string): Promise<ArticleContent> {
+    return this.request<ArticleContent>(`/api/articles/${encodeURIComponent(articleId)}/content`);
   }
 
   addFeed(url: string, category: string): Promise<FeedResponse> {

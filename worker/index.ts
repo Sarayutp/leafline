@@ -1,4 +1,5 @@
 import { fetchFeed, type ParsedFeed } from "./rss";
+import { extractArticleContent } from "./content";
 import { constantTimeEqual, randomToken, sha256Hex, validatePublicFeedUrl } from "./security";
 
 interface Env {
@@ -30,11 +31,24 @@ interface ArticleRow {
   summary: string;
   author: string | null;
   image_url: string | null;
+  has_content?: number;
+  content_html?: string | null;
+  content_source?: string | null;
+  content_fetched_at?: string | null;
   published_at: string | null;
   fetched_at: string;
   is_read: number;
   is_starred: number;
   state_updated_at: string | null;
+}
+
+interface ArticleContentRow {
+  id: string;
+  url: string;
+  image_url: string | null;
+  content_html: string | null;
+  content_source: string | null;
+  content_fetched_at: string | null;
 }
 
 class ApiProblem extends Error {
@@ -124,6 +138,7 @@ function toArticle(row: ArticleRow) {
     summary: row.summary,
     author: row.author,
     imageUrl: row.image_url,
+    hasContent: Boolean(row.has_content ?? row.content_html),
     publishedAt: row.published_at,
     fetchedAt: row.fetched_at,
     isRead: Boolean(row.is_read),
@@ -271,7 +286,9 @@ async function listArticles(url: URL, env: Env): Promise<Response> {
   const requestedLimit = Number(url.searchParams.get("limit") || 300);
   const limit = Math.max(1, Math.min(500, Number.isFinite(requestedLimit) ? requestedLimit : 300));
   const result = await env.DB.prepare(
-    `SELECT a.*,
+    `SELECT a.id, a.feed_id, a.url, a.title, a.summary, a.author, a.image_url,
+       a.published_at, a.fetched_at,
+       CASE WHEN a.content_html IS NOT NULL AND a.content_html != '' THEN 1 ELSE 0 END AS has_content,
        f.title AS feed_title,
        f.category AS feed_category,
        COALESCE(s.is_read, 0) AS is_read,
@@ -285,6 +302,47 @@ async function listArticles(url: URL, env: Env): Promise<Response> {
      LIMIT ?1`,
   ).bind(limit).all<ArticleRow>();
   return json({ articles: result.results.map(toArticle) });
+}
+
+async function getArticleContent(env: Env, articleId: string): Promise<Response> {
+  const article = await env.DB.prepare(
+    `SELECT a.id, a.url, a.image_url, a.content_html, a.content_source, a.content_fetched_at
+     FROM articles a
+     JOIN feeds f ON f.id = a.feed_id
+     WHERE a.id = ?1 AND f.enabled = 1`,
+  ).bind(articleId).first<ArticleContentRow>();
+  if (!article) throw new ApiProblem(404, "ไม่พบข่าวนี้");
+
+  if (article.content_html) {
+    return json({
+      contentHtml: article.content_html,
+      contentSource: article.content_source,
+      imageUrl: article.image_url,
+      fetchedAt: article.content_fetched_at,
+    });
+  }
+
+  let extracted;
+  try {
+    extracted = await extractArticleContent(article.url);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "ดึงเนื้อหาเต็มไม่สำเร็จ";
+    throw new ApiProblem(422, message);
+  }
+
+  if (!extracted) {
+    return json({ contentHtml: null, contentSource: null, imageUrl: article.image_url, fetchedAt: null });
+  }
+
+  const now = isoNow();
+  const imageUrl = article.image_url || extracted.imageUrl;
+  await env.DB.prepare(
+    `UPDATE articles
+     SET content_html = ?1, content_source = ?2, content_fetched_at = ?3, image_url = ?4
+     WHERE id = ?5`,
+  ).bind(extracted.contentHtml, extracted.source, now, imageUrl, articleId).run();
+
+  return json({ contentHtml: extracted.contentHtml, contentSource: extracted.source, imageUrl, fetchedAt: now });
 }
 
 async function updateArticleState(request: Request, env: Env, articleId: string): Promise<Response> {
@@ -359,6 +417,9 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (path === "/api/articles" && request.method === "GET") return listArticles(url, env);
   if (path === "/api/articles/bulk-state" && request.method === "POST") return bulkState(request, env);
+
+  const contentMatch = path.match(/^\/api\/articles\/([a-f0-9]+)\/content$/);
+  if (contentMatch && request.method === "GET") return getArticleContent(env, contentMatch[1]);
 
   const stateMatch = path.match(/^\/api\/articles\/([a-f0-9]+)\/state$/);
   if (stateMatch && request.method === "PATCH") return updateArticleState(request, env, stateMatch[1]);

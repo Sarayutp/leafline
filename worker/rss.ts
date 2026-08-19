@@ -100,7 +100,10 @@ function plainText(value: unknown): string {
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim(),
-  ).slice(0, 2400);
+  )
+    .replace(/\s*The post\b[\s\S]*?\bappeared first on\b[\s\S]*$/i, "")
+    .trim()
+    .slice(0, 2400);
 }
 
 function dateValue(value: unknown): string | null {

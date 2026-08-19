@@ -156,6 +156,28 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .reader-content h1 { margin: 0; font-family: "Manrope", "Noto Sans Thai", sans-serif; font-size: clamp(27px, 3.1vw, 42px); line-height: 1.24; letter-spacing: -1.2px; }
 .byline { margin: 13px 0 0; color: var(--muted); font-size: 11px; }
 .reader-summary { margin: 32px 0; color: color-mix(in srgb, var(--text) 80%, var(--muted)); font-family: "Noto Sans Thai", "DM Sans", sans-serif; font-size: 16px; line-height: 1.9; white-space: pre-line; }
+.reader-content-loading { display: flex; align-items: center; gap: 8px; margin: 30px 0; color: var(--muted); font-size: 12px; }
+.reader-content-error { margin: 20px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.reader-article-body { margin: 32px 0; color: color-mix(in srgb, var(--text) 86%, var(--muted)); font-family: "Noto Sans Thai", "DM Sans", sans-serif; font-size: 16px; line-height: 1.88; overflow-wrap: anywhere; }
+.reader-article-body > :first-child { margin-top: 0; }
+.reader-article-body > :last-child { margin-bottom: 0; }
+.reader-article-body p { margin: 0 0 1.3em; }
+.reader-article-body h2, .reader-article-body h3, .reader-article-body h4, .reader-article-body h5, .reader-article-body h6 { margin: 1.75em 0 .65em; color: var(--text); font-family: "Manrope", "Noto Sans Thai", sans-serif; line-height: 1.35; letter-spacing: -.35px; }
+.reader-article-body h2 { font-size: 25px; }
+.reader-article-body h3 { font-size: 21px; }
+.reader-article-body h4, .reader-article-body h5, .reader-article-body h6 { font-size: 18px; }
+.reader-article-body ul, .reader-article-body ol { margin: 0 0 1.4em; padding-left: 1.5em; }
+.reader-article-body li { margin: .42em 0; padding-left: .25em; }
+.reader-article-body blockquote { margin: 1.6em 0; padding: .15em 0 .15em 1.2em; border-left: 3px solid var(--green); color: var(--muted); }
+.reader-article-body a { color: var(--green); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.reader-article-body figure { margin: 2em 0; }
+.reader-article-body img { display: block; width: auto; max-width: 100%; height: auto; margin: 1.8em auto; border-radius: 13px; background: var(--surface-soft); }
+.reader-article-body figcaption { margin: -.9em auto 1.8em; color: var(--muted); font-size: 11px; line-height: 1.55; text-align: center; }
+.reader-article-body pre { overflow-x: auto; padding: 15px; border-radius: 10px; background: var(--surface-soft); font-size: 13px; line-height: 1.55; }
+.reader-article-body table { display: block; overflow-x: auto; width: 100%; margin: 1.7em 0; border-collapse: collapse; font-size: 13px; }
+.reader-article-body th, .reader-article-body td { padding: 9px 11px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.reader-article-body th { color: var(--text); background: var(--surface-soft); font-weight: 700; }
+.reader-article-body hr { margin: 2em 0; border: 0; border-top: 1px solid var(--line); }
 .read-original { width: fit-content; }
 .reader-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; width: min(310px, 80%); height: 100%; margin: auto; color: var(--muted); text-align: center; }
 .reader-placeholder h3, .empty-list h3 { margin: 16px 0 6px; color: var(--text); font-family: "Manrope", "Noto Sans Thai", sans-serif; font-size: 16px; }
@@ -293,6 +315,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .reader-content { width: calc(100% - 38px); margin-top: 28px; }
   .reader-content h1 { font-size: 27px; }
   .reader-summary { font-size: 15px; }
+  .reader-article-body { font-size: 15px; }
+  .reader-article-body h2 { font-size: 22px; }
+  .reader-article-body h3 { font-size: 19px; }
   .reader-placeholder { display: none; }
   .mobile-nav { position: fixed; right: 0; bottom: 0; left: 0; z-index: 18; display: grid !important; grid-template-columns: repeat(4, 1fr); height: calc(63px + env(safe-area-inset-bottom)); padding: 6px 8px env(safe-area-inset-bottom); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-strong) 94%, transparent); backdrop-filter: blur(16px); }
   .mobile-nav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; color: var(--faint); background: transparent; font-size: 8px; }

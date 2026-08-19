@@ -21,11 +21,19 @@ export interface Article {
   summary: string;
   author: string | null;
   imageUrl: string | null;
+  hasContent: boolean;
   publishedAt: string | null;
   fetchedAt: string;
   isRead: boolean;
   isStarred: boolean;
   stateUpdatedAt: string | null;
+}
+
+export interface ArticleContent {
+  contentHtml: string | null;
+  contentSource: string | null;
+  imageUrl: string | null;
+  fetchedAt: string | null;
 }
 
 export type LibraryView =
