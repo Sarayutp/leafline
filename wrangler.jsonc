@@ -7,13 +7,13 @@
     "enabled": true
   },
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:5173,http://localhost:4173"
+    "ALLOWED_ORIGINS": "https://sarayutp.github.io,http://localhost:5173,http://localhost:4173"
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "leafline-db",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "database_id": "c122f301-64db-4e92-baa3-e4e0b038cb5e",
       "migrations_dir": "migrations"
     }
   ],
