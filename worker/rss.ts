@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import { validatePublicFeedUrl } from "./security";
+import { validatePublicFeedUrl } from "./security.ts";
 
 export interface ParsedArticle {
   guid: string;
@@ -21,14 +21,29 @@ export interface ParsedFeed {
   articles: ParsedArticle[];
 }
 
-async function fetchPublicUrl(sourceUrl: string): Promise<Response> {
+export interface FeedValidators {
+  etag?: string | null;
+  lastModified?: string | null;
+}
+
+export interface FetchedFeed {
+  feed: ParsedFeed | null;
+  notModified: boolean;
+  etag: string | null;
+  lastModified: string | null;
+}
+
+async function fetchPublicUrl(sourceUrl: string, validators: FeedValidators = {}): Promise<Response> {
   let url = validatePublicFeedUrl(sourceUrl);
   for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const headers = new Headers({
+      Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
+      "User-Agent": "Leafline/0.3 (+personal RSS reader)",
+    });
+    if (validators.etag) headers.set("If-None-Match", validators.etag);
+    if (validators.lastModified) headers.set("If-Modified-Since", validators.lastModified);
     const response = await fetch(url.toString(), {
-      headers: {
-        Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
-        "User-Agent": "Leafline/0.1 (+personal RSS reader)",
-      },
+      headers,
       redirect: "manual",
       signal: AbortSignal.timeout(15_000),
     });
@@ -155,9 +170,15 @@ function normalizeItem(itemValue: unknown): ParsedArticle | null {
   };
 }
 
-export async function fetchFeed(sourceUrl: string): Promise<ParsedFeed> {
+export async function fetchFeed(sourceUrl: string, validators: FeedValidators = {}): Promise<FetchedFeed> {
   const url = validatePublicFeedUrl(sourceUrl);
-  const response = await fetchPublicUrl(url.toString());
+  const response = await fetchPublicUrl(url.toString(), validators);
+  const etag = response.headers.get("etag") || validators.etag || null;
+  const lastModified = response.headers.get("last-modified") || validators.lastModified || null;
+
+  if (response.status === 304) {
+    return { feed: null, notModified: true, etag, lastModified };
+  }
 
   if (!response.ok) throw new Error(`ต้นทางตอบกลับ ${response.status}`);
   const declaredSize = Number(response.headers.get("content-length") || 0);
@@ -184,9 +205,14 @@ export async function fetchFeed(sourceUrl: string): Promise<ParsedFeed> {
   const iconUrl = scalar(image.url || atom.icon || atom.logo) || null;
 
   return {
-    title: plainText(root.title) || url.hostname,
-    siteUrl: linkOf(root.link) || null,
-    iconUrl,
-    articles,
+    feed: {
+      title: plainText(root.title) || url.hostname,
+      siteUrl: linkOf(root.link) || null,
+      iconUrl,
+      articles,
+    },
+    notModified: false,
+    etag,
+    lastModified,
   };
 }

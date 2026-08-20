@@ -1,6 +1,7 @@
 import type {
   Article,
   ArticleContent,
+  ArticleChanges,
   ArticlePage,
   ArticleReadFilter,
   Feed,
@@ -72,8 +73,15 @@ class LeaflineApi {
 
     let response: Response;
     try {
-      response = await fetch(`${this.apiUrl}${path}`, { ...init, headers });
-    } catch {
+      response = await fetch(`${this.apiUrl}${path}`, {
+        ...init,
+        headers,
+        signal: init.signal || AbortSignal.timeout(20_000),
+      });
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "TimeoutError") {
+        throw new ApiError("เซิร์ฟเวอร์ตอบช้าเกินไป กรุณาลองอีกครั้ง", 0);
+      }
       throw new ApiError("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาตรวจสอบ Worker URL และอินเทอร์เน็ต", 0);
     }
 
@@ -124,6 +132,8 @@ class LeaflineApi {
     category?: string;
     read?: ArticleReadFilter;
     starred?: boolean;
+    query?: string;
+    publishedSince?: string;
     cursor?: string | null;
   } = {}): Promise<ArticlePage> {
     const params = new URLSearchParams();
@@ -132,8 +142,15 @@ class LeaflineApi {
     if (options.category) params.set("category", options.category);
     if (options.read && options.read !== "all") params.set("read", options.read);
     if (options.starred) params.set("starred", "true");
+    if (options.query) params.set("q", options.query);
+    if (options.publishedSince) params.set("publishedSince", options.publishedSince);
     if (options.cursor) params.set("cursor", options.cursor);
     return this.request<ArticlePage>(`/api/articles?${params.toString()}`);
+  }
+
+  articleChanges(since: string): Promise<ArticleChanges> {
+    const params = new URLSearchParams({ since });
+    return this.request<ArticleChanges>(`/api/articles/changes?${params.toString()}`);
   }
 
   articleContent(articleId: string): Promise<ArticleContent> {
@@ -165,7 +182,7 @@ class LeaflineApi {
     });
   }
 
-  refreshFeeds(limit = 8): Promise<RefreshResult> {
+  refreshFeeds(limit = 6): Promise<RefreshResult> {
     return this.request<RefreshResult>(`/api/feeds/refresh?limit=${limit}`, { method: "POST" });
   }
 

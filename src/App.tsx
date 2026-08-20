@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { api, ApiError } from "./api";
+import { articleMatchesView, mergeArticles } from "./article-library";
 import { loadSnapshot, saveSnapshot } from "./cache";
 import { canStartSwipe, resolveSwipe, type SwipeStart } from "./gestures";
 import { READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN, readerFontSizeFromStorage } from "./preferences";
@@ -39,6 +40,27 @@ import { feedColor, fullDate, initials, relativeDate } from "./utils";
 type Stage = "checking" | "onboarding" | "ready" | "failed";
 
 const DEFAULT_VIEW: LibraryView = { kind: "inbox", label: "ข่าวทั้งหมด" };
+const ARTICLE_PAGE_SIZE = 50;
+const SYNC_INTERVAL_MS = 120_000;
+const FEED_METADATA_INTERVAL_MS = 600_000;
+
+function articlePageOptions(view: LibraryView, readFilter: ArticleReadFilter, query: string, cursor?: string | null) {
+  const options: Parameters<typeof api.articlePage>[0] = {
+    limit: ARTICLE_PAGE_SIZE,
+    read: readFilter,
+    query: query.trim() || undefined,
+    cursor,
+  };
+  if (view.kind === "feed") options.feedId = view.id;
+  if (view.kind === "category") options.category = view.id;
+  if (view.kind === "starred") options.starred = true;
+  if (view.kind === "today") {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    options.publishedSince = today.toISOString();
+  }
+  return options;
+}
 
 function App() {
   const [stage, setStage] = useState<Stage>("checking");
@@ -47,15 +69,18 @@ function App() {
   const [view, setView] = useState<LibraryView>(DEFAULT_VIEW);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [readFilter, setReadFilter] = useState<ArticleReadFilter>(() => {
     const saved = localStorage.getItem("leafline.readFilter");
     if (saved === "read" || saved === "unread") return saved;
     return localStorage.getItem("leafline.hideRead") === "true" ? "unread" : "all";
   });
-  const [feedArticles, setFeedArticles] = useState<Article[]>([]);
-  const [feedCursor, setFeedCursor] = useState<string | null>(null);
-  const [feedHasMore, setFeedHasMore] = useState(false);
-  const [feedLoading, setFeedLoading] = useState(false);
+  const [pageArticles, setPageArticles] = useState<Article[]>([]);
+  const [pageCursor, setPageCursor] = useState<string | null>(null);
+  const [pageHasMore, setPageHasMore] = useState(false);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [pageLoaded, setPageLoaded] = useState(false);
+  const [pageReloadKey, setPageReloadKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -65,6 +90,8 @@ function App() {
   const [toast, setToast] = useState("");
   const [dark, setDark] = useState(() => localStorage.getItem("leafline.theme") === "dark");
   const [readerFontSize, setReaderFontSize] = useState(() => readerFontSizeFromStorage(localStorage.getItem("leafline.readerFontSize")));
+  const syncCursorRef = useRef("");
+  const syncInFlightRef = useRef(false);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -73,10 +100,13 @@ function App() {
 
   const loadLibrary = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
+    const syncStartedAt = new Date().toISOString();
     try {
       const [nextFeeds, nextArticles] = await Promise.all([api.feeds(), api.articles()]);
       setFeeds(nextFeeds);
       setArticles(nextArticles);
+      setPageReloadKey((current) => current + 1);
+      syncCursorRef.current = syncStartedAt;
       setLastSynced(new Date());
       setStage("ready");
       void saveSnapshot(nextFeeds, nextArticles);
@@ -89,6 +119,7 @@ function App() {
         if (cached) {
           setFeeds(cached.feeds);
           setArticles(cached.articles);
+          setPageReloadKey((current) => current + 1);
           setLastSynced(new Date(cached.savedAt));
           setStage("ready");
           notify("ออฟไลน์อยู่ — กำลังแสดงข้อมูลที่ซิงก์ล่าสุด");
@@ -100,6 +131,43 @@ function App() {
       setLoading(false);
     }
   }, [notify]);
+
+  const loadFeedMetadata = useCallback(async () => {
+    try {
+      setFeeds(await api.feeds());
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        api.disconnect();
+        setStage("onboarding");
+      }
+    }
+  }, []);
+
+  const syncChanges = useCallback(async () => {
+    if (!syncCursorRef.current || syncInFlightRef.current || document.visibilityState !== "visible") return;
+    syncInFlightRef.current = true;
+    try {
+      const changes = await api.articleChanges(syncCursorRef.current);
+      if (changes.hasMore) {
+        await loadLibrary(true);
+        return;
+      }
+      syncCursorRef.current = changes.syncedAt;
+      if (changes.articles.length) {
+        setArticles((current) => mergeArticles(current, changes.articles, 500));
+        setPageArticles((current) => mergeArticles(current, changes.articles)
+          .filter((article) => articleMatchesView(article, view, readFilter, debouncedSearch, selectedId)));
+      }
+      setLastSynced(new Date(changes.syncedAt));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        api.disconnect();
+        setStage("onboarding");
+      }
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }, [debouncedSearch, loadLibrary, readFilter, selectedId, view]);
 
   useEffect(() => {
     api.consumePairingLink();
@@ -114,17 +182,29 @@ function App() {
   }, [loadLibrary]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
     if (stage !== "ready") return;
-    const timer = window.setInterval(() => void loadLibrary(true), 30_000);
+    const syncTimer = window.setInterval(() => void syncChanges(), SYNC_INTERVAL_MS);
+    const feedsTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadFeedMetadata();
+    }, FEED_METADATA_INTERVAL_MS);
     const onVisible = () => {
-      if (document.visibilityState === "visible") void loadLibrary(true);
+      if (document.visibilityState === "visible") {
+        void syncChanges();
+        void loadFeedMetadata();
+      }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.clearInterval(timer);
+      window.clearInterval(syncTimer);
+      window.clearInterval(feedsTimer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [loadLibrary, stage]);
+  }, [loadFeedMetadata, stage, syncChanges]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -142,79 +222,69 @@ function App() {
   }, [readFilter]);
 
   useEffect(() => {
-    if (stage !== "ready" || view.kind !== "feed") {
-      setFeedArticles([]);
-      setFeedCursor(null);
-      setFeedHasMore(false);
-      setFeedLoading(false);
+    if (stage !== "ready") {
+      setPageArticles([]);
+      setPageCursor(null);
+      setPageHasMore(false);
+      setPageLoading(false);
+      setPageLoaded(false);
       return;
     }
 
     let current = true;
-    setFeedArticles([]);
-    setFeedCursor(null);
-    setFeedHasMore(false);
-    setFeedLoading(true);
-    void api.articlePage({ feedId: view.id, read: readFilter, limit: 50 })
+    setPageArticles([]);
+    setPageCursor(null);
+    setPageHasMore(false);
+    setPageLoading(true);
+    setPageLoaded(false);
+    void api.articlePage(articlePageOptions(view, readFilter, debouncedSearch))
       .then((page) => {
         if (!current) return;
-        setFeedArticles(page.articles);
-        setFeedCursor(page.nextCursor);
-        setFeedHasMore(page.hasMore);
+        setPageArticles(page.articles);
+        setPageCursor(page.nextCursor);
+        setPageHasMore(page.hasMore);
+        setPageLoaded(true);
       })
       .catch(() => {
-        if (current) notify("โหลดคลังข่าวของแหล่งนี้ไม่สำเร็จ");
+        if (current) notify("โหลดข่าวจากคลังไม่สำเร็จ กำลังแสดง snapshot ล่าสุด");
       })
       .finally(() => {
-        if (current) setFeedLoading(false);
+        if (current) setPageLoading(false);
       });
     return () => {
       current = false;
     };
-  }, [notify, readFilter, stage, view]);
+  }, [debouncedSearch, notify, pageReloadKey, readFilter, stage, view]);
 
-  const loadMoreFeed = async () => {
-    if (view.kind !== "feed" || !feedCursor || feedLoading) return;
-    setFeedLoading(true);
+  const loadMorePage = async (): Promise<Article[]> => {
+    if (!pageCursor || pageLoading) return [];
+    setPageLoading(true);
     try {
-      const page = await api.articlePage({ feedId: view.id, read: readFilter, limit: 50, cursor: feedCursor });
-      setFeedArticles((current) => {
+      const page = await api.articlePage(articlePageOptions(view, readFilter, debouncedSearch, pageCursor));
+      setPageArticles((current) => {
         const existing = new Set(current.map((article) => article.id));
         return [...current, ...page.articles.filter((article) => !existing.has(article.id))];
       });
-      setFeedCursor(page.nextCursor);
-      setFeedHasMore(page.hasMore);
+      setPageCursor(page.nextCursor);
+      setPageHasMore(page.hasMore);
+      return page.articles;
     } catch {
       notify("โหลดข่าวย้อนหลังเพิ่มไม่สำเร็จ");
+      return [];
     } finally {
-      setFeedLoading(false);
+      setPageLoading(false);
     }
   };
 
-  const activeArticles = view.kind === "feed" ? feedArticles : articles;
+  const activeArticles = pageLoaded ? pageArticles : articles;
 
   const selected = useMemo(
-    () => feedArticles.find((article) => article.id === selectedId) || articles.find((article) => article.id === selectedId) || null,
-    [articles, feedArticles, selectedId],
+    () => pageArticles.find((article) => article.id === selectedId) || articles.find((article) => article.id === selectedId) || null,
+    [articles, pageArticles, selectedId],
   );
 
   const visibleArticles = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const query = search.trim().toLocaleLowerCase("th");
-
-    return activeArticles.filter((article) => {
-      if (view.kind === "today" && new Date(article.publishedAt || article.fetchedAt) < today) return false;
-      if (view.kind === "starred" && !article.isStarred) return false;
-      if (view.kind === "category" && article.feedCategory !== view.id) return false;
-      if (view.kind === "feed" && article.feedId !== view.id) return false;
-      if (readFilter === "unread" && article.isRead && article.id !== selectedId) return false;
-      if (readFilter === "read" && !article.isRead && article.id !== selectedId) return false;
-      if (query && !`${article.title} ${article.summary} ${article.feedTitle}`.toLocaleLowerCase("th").includes(query)) {
-        return false;
-      }
-      return true;
-    });
+    return activeArticles.filter((article) => articleMatchesView(article, view, readFilter, search, selectedId));
   }, [activeArticles, readFilter, search, selectedId, view]);
 
   const selectedVisibleIndex = selectedId
@@ -230,19 +300,34 @@ function App() {
   };
 
   const changeArticleState = async (articleId: string, patch: { isRead?: boolean; isStarred?: boolean }) => {
-    const previous = articles;
-    const previousFeedArticles = feedArticles;
+    const original = pageArticles.find((article) => article.id === articleId)
+      || articles.find((article) => article.id === articleId);
+    const readDelta = original && typeof patch.isRead === "boolean" && patch.isRead !== original.isRead
+      ? (patch.isRead ? -1 : 1)
+      : 0;
     setArticles((current) =>
       current.map((article) => (article.id === articleId ? { ...article, ...patch } : article)),
     );
-    setFeedArticles((current) =>
+    setPageArticles((current) =>
       current.map((article) => (article.id === articleId ? { ...article, ...patch } : article)),
     );
+    if (original && readDelta) {
+      setFeeds((current) => current.map((feed) => feed.id === original.feedId
+        ? { ...feed, unreadCount: Math.max(0, feed.unreadCount + readDelta) }
+        : feed));
+    }
     try {
       await api.updateState(articleId, patch);
     } catch {
-      setArticles(previous);
-      setFeedArticles(previousFeedArticles);
+      if (original) {
+        setArticles((current) => current.map((article) => article.id === articleId ? original : article));
+        setPageArticles((current) => current.map((article) => article.id === articleId ? original : article));
+        if (readDelta) {
+          setFeeds((current) => current.map((feed) => feed.id === original.feedId
+            ? { ...feed, unreadCount: Math.max(0, feed.unreadCount - readDelta) }
+            : feed));
+        }
+      }
       notify("ซิงก์ไม่สำเร็จ กรุณาลองอีกครั้ง");
     }
   };
@@ -251,7 +336,7 @@ function App() {
     const ids = visibleArticles.filter((article) => !article.isRead).map((article) => article.id);
     if (!ids.length) return;
     setArticles((current) => current.map((article) => (ids.includes(article.id) ? { ...article, isRead: true } : article)));
-    setFeedArticles((current) => current.map((article) => (ids.includes(article.id) ? { ...article, isRead: true } : article)));
+    setPageArticles((current) => current.map((article) => (ids.includes(article.id) ? { ...article, isRead: true } : article)));
     try {
       await api.bulkRead(ids);
       notify(`ทำเครื่องหมายอ่านแล้ว ${ids.length} ข่าว`);
@@ -274,7 +359,23 @@ function App() {
         ? { ...article, hasContent: Boolean(content.contentHtml), imageUrl: content.imageUrl || article.imageUrl }
         : article
     )));
+    setPageArticles((current) => current.map((article) => (
+      article.id === articleId
+        ? { ...article, hasContent: Boolean(content.contentHtml), imageUrl: content.imageUrl || article.imageUrl }
+        : article
+    )));
   }, []);
+
+  const goToNextArticle = async () => {
+    if (nextArticle) {
+      chooseArticle(nextArticle);
+      return;
+    }
+    if (!pageHasMore || pageLoading) return;
+    const added = await loadMorePage();
+    const firstVisible = added.find((article) => articleMatchesView(article, view, readFilter, search));
+    if (firstVisible) chooseArticle(firstVisible);
+  };
 
   useEffect(() => {
     if (stage !== "ready" || addOpen || settingsOpen) return;
@@ -292,15 +393,15 @@ function App() {
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
 
-      if (!nextArticle) return;
+      if (!nextArticle && !pageHasMore) return;
 
       event.preventDefault();
-      chooseArticle(nextArticle);
+      void goToNextArticle();
     };
 
     window.addEventListener("keydown", openNextArticle);
     return () => window.removeEventListener("keydown", openNextArticle);
-  }, [addOpen, nextArticle, settingsOpen, stage]);
+  }, [addOpen, nextArticle, pageHasMore, pageLoading, settingsOpen, stage]);
 
   if (stage === "checking") return <Splash />;
   if (stage === "onboarding") return <Onboarding onConnected={() => void loadLibrary()} dark={dark} setDark={setDark} />;
@@ -370,7 +471,7 @@ function App() {
         </div>
 
         <div className="list-meta">
-          <span>{visibleArticles.length} เรื่อง{view.kind === "feed" && feedHasMore ? " · ยังมีอีก" : ""}</span>
+          <span>{visibleArticles.length} เรื่อง{pageHasMore ? " · ยังมีอีก" : ""}</span>
           <span className="sync-status"><span className="online-dot" /> ซิงก์แล้ว {lastSynced ? relativeDate(lastSynced.toISOString()) : ""}</span>
         </div>
 
@@ -386,14 +487,14 @@ function App() {
                   onStar={() => void changeArticleState(article.id, { isStarred: !article.isStarred })}
                 />
               ))}
-              {view.kind === "feed" && feedHasMore && (
-                <button className="load-more-button" onClick={() => void loadMoreFeed()} disabled={feedLoading}>
-                  {feedLoading ? <LoaderCircle className="spin" size={17} /> : <ArchiveRestore size={17} />}
-                  {feedLoading ? "กำลังโหลด…" : "โหลดข่าวย้อนหลังเพิ่มเติม"}
+              {pageHasMore && (
+                <button className="load-more-button" onClick={() => void loadMorePage()} disabled={pageLoading}>
+                  {pageLoading ? <LoaderCircle className="spin" size={17} /> : <ArchiveRestore size={17} />}
+                  {pageLoading ? "กำลังโหลด…" : "โหลดข่าวย้อนหลังเพิ่มเติม"}
                 </button>
               )}
             </>
-          ) : feedLoading ? (
+          ) : pageLoading ? (
             <div className="feed-loading"><LoaderCircle className="spin" size={22} />กำลังโหลดคลังข่าว…</div>
           ) : (
             <EmptyList hasFeeds={feeds.length > 0} onAdd={() => setAddOpen(true)} />
@@ -404,9 +505,9 @@ function App() {
       <Reader
         article={selected}
         open={readerOpen}
-        hasNext={Boolean(selected && nextArticle)}
+        hasNext={Boolean(selected && (nextArticle || pageHasMore))}
         hasPrevious={Boolean(selected && previousArticle)}
-        onNext={() => nextArticle && chooseArticle(nextArticle)}
+        onNext={() => void goToNextArticle()}
         onPrevious={() => previousArticle && chooseArticle(previousArticle)}
         onClose={() => setReaderOpen(false)}
         onToggleRead={() => selected && void changeArticleState(selected.id, { isRead: !selected.isRead })}
@@ -439,30 +540,49 @@ function App() {
           onReaderFontSizeChange={setReaderFontSize}
           onClose={() => setSettingsOpen(false)}
           onRefresh={async () => {
-            const passes = Math.max(1, Math.ceil(feeds.length / 8));
-            let succeeded = 0;
-            let failed = 0;
-            for (let pass = 0; pass < passes; pass += 1) {
-              const result = await api.refreshFeeds(8);
-              succeeded += result.succeeded;
-              failed += result.failed;
+            try {
+              const passes = Math.max(1, Math.ceil(feeds.length / 6));
+              let succeeded = 0;
+              let failed = 0;
+              for (let pass = 0; pass < passes; pass += 1) {
+                const result = await api.refreshFeeds(6);
+                succeeded += result.succeeded;
+                failed += result.failed;
+              }
+              notify(`ตรวจแล้ว ${succeeded + failed} แหล่ง · สำเร็จ ${succeeded}${failed ? ` · มีปัญหา ${failed}` : ""}`);
+              await loadLibrary(true);
+            } catch (cause) {
+              notify(cause instanceof Error ? cause.message : "ตรวจแหล่งข่าวไม่สำเร็จ");
             }
-            notify(`ตรวจแล้ว ${succeeded + failed} แหล่ง · สำเร็จ ${succeeded}${failed ? ` · มีปัญหา ${failed}` : ""}`);
-            await loadLibrary(true);
           }}
           onRefreshFeed={async (feedId) => {
-            const result = await api.refreshFeed(feedId);
-            notify(`อัปเดตแล้ว · พบ ${result.imported} ข่าวใน RSS`);
-            await loadLibrary(true);
+            try {
+              const result = await api.refreshFeed(feedId);
+              notify(result.imported ? `พบข่าวใหม่ ${result.imported} รายการ` : "อัปเดตแล้ว · ยังไม่มีข่าวใหม่");
+              await loadLibrary(true);
+            } catch (cause) {
+              notify(cause instanceof Error ? cause.message : "อัปเดตแหล่งข่าวไม่สำเร็จ");
+            }
           }}
           onBackfill={async (feedId) => {
-            const result = await api.backfillFeed(feedId, 5);
-            notify(`นำเข้าข่าวย้อนหลัง ${result.completedPages} หน้า · ${result.imported} รายการ`);
-            await loadLibrary(true);
+            try {
+              const result = await api.backfillFeed(feedId, 5);
+              notify(result.ok
+                ? `นำเข้าข่าวย้อนหลัง ${result.completedPages} หน้า · ${result.imported} รายการ`
+                : `นำเข้าได้บางส่วน ${result.imported} รายการ · ${result.errors[0] || "ต้นทางไม่รองรับ"}`);
+              await loadLibrary(true);
+            } catch (cause) {
+              notify(cause instanceof Error ? cause.message : "นำเข้าข่าวย้อนหลังไม่สำเร็จ");
+            }
           }}
           onDelete={async (feedId) => {
-            await api.deleteFeed(feedId);
-            await loadLibrary(true);
+            try {
+              await api.deleteFeed(feedId);
+              notify("ลบแหล่งข่าวแล้ว");
+              await loadLibrary(true);
+            } catch (cause) {
+              notify(cause instanceof Error ? cause.message : "ลบแหล่งข่าวไม่สำเร็จ");
+            }
           }}
           onDisconnect={() => {
             api.disconnect();
@@ -586,12 +706,14 @@ function Sidebar({ feeds, articles, view, open, onClose, onSelect, onAdd, onSett
   onSettings: () => void;
 }) {
   const categories = [...new Set(feeds.map((feed) => feed.category))];
-  const unread = articles.filter((article) => !article.isRead).length;
+  const unread = feeds.reduce((total, feed) => total + feed.unreadCount, 0);
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const today = articles.filter((article) => new Date(article.publishedAt || article.fetchedAt) >= todayStart).length;
 
-  const countForCategory = (category: string) => articles.filter((article) => article.feedCategory === category && !article.isRead).length;
+  const countForCategory = (category: string) => feeds
+    .filter((feed) => feed.category === category)
+    .reduce((total, feed) => total + feed.unreadCount, 0);
 
   return (
     <>
@@ -620,9 +742,7 @@ function Sidebar({ feeds, articles, view, open, onClose, onSelect, onAdd, onSett
                   <button key={feed.id} className={view.kind === "feed" && view.id === feed.id ? "active" : ""} onClick={() => onSelect({ kind: "feed", id: feed.id, label: feed.title })}>
                     <span className="feed-mini-icon" style={{ background: feedColor(feed.title) }}>{initials(feed.title).slice(0, 1)}</span>
                     <span>{feed.title}</span>
-                    {articles.filter((article) => article.feedId === feed.id && !article.isRead).length > 0 && (
-                      <em>{articles.filter((article) => article.feedId === feed.id && !article.isRead).length}</em>
-                    )}
+                    {feed.unreadCount > 0 && <em>{feed.unreadCount}</em>}
                   </button>
                 ))}
               </div>

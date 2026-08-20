@@ -8,6 +8,8 @@ export interface Feed {
   enabled: boolean;
   lastFetchedAt: string | null;
   lastError: string | null;
+  failureCount: number;
+  nextFetchAt: string | null;
   unreadCount: number;
 }
 
@@ -42,6 +44,12 @@ export interface ArticlePage {
   articles: Article[];
   hasMore: boolean;
   nextCursor: string | null;
+}
+
+export interface ArticleChanges {
+  articles: Article[];
+  hasMore: boolean;
+  syncedAt: string;
 }
 
 export interface RefreshResult {
