@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { api, ApiError } from "./api";
+import { articleHtmlHasMeaningfulImage } from "./media";
 import { articleMatchesView, mergeArticles } from "./article-library";
 import { loadSnapshot, saveSnapshot } from "./cache";
 import { canStartSwipe, resolveSwipe, type SwipeStart } from "./gestures";
@@ -760,6 +761,7 @@ function SideItem({ active, icon, label, count, onClick }: { active: boolean; ic
 }
 
 function ArticleRow({ article, selected, onSelect, onStar }: { article: Article; selected: boolean; onSelect: () => void; onStar: () => void }) {
+  const imageUrl = api.imageUrl(article.imageUrl, article.id);
   return (
     <article className={`article-row ${selected ? "selected" : ""} ${article.isRead ? "read" : ""}`} onClick={onSelect}>
       <div className="article-source">
@@ -774,7 +776,7 @@ function ArticleRow({ article, selected, onSelect, onStar }: { article: Article;
           <h2>{article.title}</h2>
           <p>{article.summary || "เปิดอ่านรายละเอียดจากเว็บไซต์ต้นทาง"}</p>
         </div>
-        {article.imageUrl && <img src={article.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
+        {imageUrl && <img src={imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
       </div>
       <button className={`star-button ${article.isStarred ? "active" : ""}`} onClick={(event) => { event.stopPropagation(); onStar(); }} aria-label="บันทึกข่าว">
         {article.isStarred ? <BookmarkCheck size={18} /> : <Bookmark size={18} />}
@@ -873,7 +875,8 @@ function Reader({ article, open, hasNext, hasPrevious, onNext, onPrevious, onClo
   };
 
   const fullContent = content?.contentHtml;
-  const heroImage = content?.imageUrl || article?.imageUrl;
+  const heroImage = api.imageUrl(content?.imageUrl || article?.imageUrl || null, article?.id || "");
+  const showHeroImage = Boolean(heroImage && (!fullContent || !articleHtmlHasMeaningfulImage(fullContent)));
 
   return (
     <aside
@@ -894,7 +897,7 @@ function Reader({ article, open, hasNext, hasPrevious, onNext, onPrevious, onClo
             <button className={`icon-button ${article.isStarred ? "active" : ""}`} onClick={onToggleStar} title="บันทึก"><Bookmark size={19} /></button>
             <a className="icon-button" href={article.url} target="_blank" rel="noreferrer" title="เปิดต้นฉบับ"><ExternalLink size={19} /></a>
           </div>
-          {!fullContent && heroImage && <img className="reader-hero" src={heroImage} alt="" referrerPolicy="no-referrer" />}
+          {showHeroImage && heroImage && <img className="reader-hero" src={heroImage} alt="" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
           <div className="reader-content">
             <div className="reader-source"><span className="feed-avatar" style={{ background: feedColor(article.feedTitle) }}>{initials(article.feedTitle)}</span><div><strong>{article.feedTitle}</strong><span>{fullDate(article.publishedAt || article.fetchedAt)}</span></div></div>
             <h1>{article.title}</h1>

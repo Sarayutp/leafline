@@ -1,5 +1,6 @@
 import { fetchFeed, type ParsedFeed } from "./rss";
 import { extractArticleContent, sanitizeArticleHtml } from "./content";
+import { proxyTheStandardImage } from "./media.ts";
 import { constantTimeEqual, randomToken, sha256Hex, validatePublicFeedUrl } from "./security";
 
 interface Env {
@@ -647,6 +648,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 204 });
   }
   if (path === "/api/health" && request.method === "GET") return json({ ok: true, service: "leafline-api" });
+  const publicImageMatch = path.match(/^\/api\/articles\/([a-f0-9]+)\/image$/);
+  if (publicImageMatch && request.method === "GET") return proxyTheStandardImage(url, env, publicImageMatch[1]);
   if (path === "/api/setup/status" && request.method === "GET") return handleSetup(request, env);
   if (path === "/api/setup") return handleSetup(request, env);
 

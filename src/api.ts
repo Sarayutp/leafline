@@ -10,6 +10,7 @@ import type {
   SetupResponse,
   SetupStatus,
 } from "./types";
+import { proxyArticleImageUrls, proxyImageUrl } from "./media";
 
 const API_URL_KEY = "leafline.apiUrl";
 const TOKEN_KEY = "leafline.syncToken";
@@ -154,7 +155,15 @@ class LeaflineApi {
   }
 
   articleContent(articleId: string): Promise<ArticleContent> {
-    return this.request<ArticleContent>(`/api/articles/${encodeURIComponent(articleId)}/content`);
+    return this.request<ArticleContent>(`/api/articles/${encodeURIComponent(articleId)}/content`).then((content) => ({
+      ...content,
+      contentHtml: content.contentHtml ? proxyArticleImageUrls(content.contentHtml, this.apiUrl, articleId) : null,
+      imageUrl: proxyImageUrl(content.imageUrl, this.apiUrl, articleId),
+    }));
+  }
+
+  imageUrl(sourceUrl: string | null, articleId: string): string | null {
+    return proxyImageUrl(sourceUrl, this.apiUrl, articleId);
   }
 
   addFeed(url: string, category: string): Promise<FeedResponse> {
