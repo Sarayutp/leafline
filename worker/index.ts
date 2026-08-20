@@ -244,13 +244,9 @@ async function refreshFeedBatch(env: Env, requestedLimit = 8): Promise<RefreshBa
   const result = await env.DB.prepare(
     "SELECT * FROM feeds WHERE enabled = 1 ORDER BY updated_at ASC LIMIT ?1",
   ).bind(limit).all<FeedRow>();
-  let succeeded = 0;
-  let imported = 0;
-  for (const feed of result.results) {
-    const refreshed = await refreshFeed(env, feed, false);
-    if (refreshed.ok) succeeded += 1;
-    imported += refreshed.imported;
-  }
+  const refreshedFeeds = await Promise.all(result.results.map((feed) => refreshFeed(env, feed, false)));
+  const succeeded = refreshedFeeds.filter((refreshed) => refreshed.ok).length;
+  const imported = refreshedFeeds.reduce((total, refreshed) => total + refreshed.imported, 0);
   return {
     attempted: result.results.length,
     succeeded,
