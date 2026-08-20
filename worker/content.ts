@@ -1,4 +1,4 @@
-import { validatePublicFeedUrl } from "./security";
+import { validatePublicFeedUrl } from "./security.ts";
 
 export interface ExtractedArticleContent {
   contentHtml: string;
@@ -8,6 +8,8 @@ export interface ExtractedArticleContent {
 
 const CONTENT_START = "<!--leafline-content-start-->";
 const CONTENT_END = "<!--leafline-content-end-->";
+const BBC_SEGMENT_START = "<!--leafline-bbc-segment-start-->";
+const BBC_SEGMENT_END = "<!--leafline-bbc-segment-end-->";
 const MAX_PAGE_SIZE = 2_000_000;
 const MAX_CONTENT_SIZE = 180_000;
 
@@ -106,6 +108,30 @@ function safeHttpUrl(value: string | null, baseUrl: URL): string | null {
   } catch {
     return null;
   }
+}
+
+export function isBbcThaiArticleUrl(url: URL): boolean {
+  return (url.hostname === "bbc.com" || url.hostname === "www.bbc.com")
+    && url.pathname.startsWith("/thai/articles/");
+}
+
+export function joinBbcArticleSegments(cleanedPage: string): string | null {
+  const segments: string[] = [];
+  let offset = 0;
+
+  while (offset < cleanedPage.length) {
+    const start = cleanedPage.indexOf(BBC_SEGMENT_START, offset);
+    if (start < 0) break;
+    const contentStart = start + BBC_SEGMENT_START.length;
+    const end = cleanedPage.indexOf(BBC_SEGMENT_END, contentStart);
+    if (end < 0) return null;
+
+    const segment = cleanedPage.slice(contentStart, end).trim();
+    if (segment) segments.push(segment);
+    offset = end + BBC_SEGMENT_END.length;
+  }
+
+  return segments.length ? segments.join("\n") : null;
 }
 
 async function fetchPublicPage(sourceUrl: URL): Promise<{ response: Response; finalUrl: URL }> {
@@ -220,6 +246,64 @@ export async function sanitizeArticleHtml(rawHtml: string, articleUrl: string): 
   return contentHtml;
 }
 
+async function extractBbcThaiArticleContent(
+  pageHtml: string,
+  finalUrl: URL,
+): Promise<ExtractedArticleContent | null> {
+  let bbcTextBlockCount = 0;
+  let imageUrl: string | null = null;
+
+  const markSegment = (element: Element): void => {
+    element.before(BBC_SEGMENT_START, { html: true });
+    element.after(BBC_SEGMENT_END, { html: true });
+  };
+  const segmentHandler: HTMLRewriterElementContentHandlers = { element: markSegment };
+
+  let rewriter = new HTMLRewriter()
+    .on('meta[property="og:image"]', {
+      element(element) {
+        imageUrl ||= safeHttpUrl(element.getAttribute("content"), finalUrl);
+      },
+    })
+    .on('meta[name="twitter:image"]', {
+      element(element) {
+        imageUrl ||= safeHttpUrl(element.getAttribute("content"), finalUrl);
+      },
+    })
+    // BBC renders every paragraph or heading as a direct child instead of one article-body container.
+    // The first matching block is the title, which Leafline already renders above the article body.
+    .on('main[role="main"] > div.e17x9cvu0', {
+      element(element) {
+        bbcTextBlockCount += 1;
+        if (bbcTextBlockCount === 1) return;
+        markSegment(element);
+      },
+    })
+    .on('main[role="main"] > figure', segmentHandler);
+
+  for (const selector of REMOVE_FROM_ARTICLE_SELECTORS) {
+    rewriter = rewriter.on(selector, {
+      element(element) {
+        element.remove();
+      },
+    });
+  }
+
+  const transformed = rewriter
+    .on("*", {
+      element(element) {
+        cleanElement(element, finalUrl);
+      },
+    })
+    .transform(new Response(pageHtml, { headers: { "content-type": "text/html;charset=UTF-8" } }));
+
+  const contentHtml = joinBbcArticleSegments(await transformed.text());
+  if (!contentHtml) return null;
+  if (contentHtml.length > MAX_CONTENT_SIZE) throw new Error("เนื้อหาบทความยาวเกินไป");
+
+  return { contentHtml, imageUrl, source: "web" };
+}
+
 export async function extractArticleContent(articleUrl: string): Promise<ExtractedArticleContent | null> {
   const requestedUrl = validatePublicFeedUrl(articleUrl);
 
@@ -232,6 +316,11 @@ export async function extractArticleContent(articleUrl: string): Promise<Extract
   if (declaredSize > MAX_PAGE_SIZE) throw new Error("หน้าบทความมีขนาดใหญ่เกินไป");
   const pageHtml = await response.text();
   if (pageHtml.length > MAX_PAGE_SIZE) throw new Error("หน้าบทความมีขนาดใหญ่เกินไป");
+
+  if (isBbcThaiArticleUrl(finalUrl)) {
+    const bbcContent = await extractBbcThaiArticleContent(pageHtml, finalUrl);
+    if (bbcContent) return bbcContent;
+  }
 
   let foundContent = false;
   let imageUrl: string | null = null;
