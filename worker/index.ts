@@ -18,6 +18,7 @@ interface FeedRow {
   enabled: number;
   last_fetched_at: string | null;
   last_error: string | null;
+  updated_at: string;
   unread_count?: number;
 }
 
@@ -148,22 +149,10 @@ function toArticle(row: ArticleRow) {
   };
 }
 
-async function storeParsedFeed(env: Env, feedId: string, sourceUrl: string, category: string, parsed: ParsedFeed): Promise<number> {
+async function storeParsedArticles(env: Env, feedId: string, parsed: ParsedFeed, markRead = false): Promise<number> {
   const now = isoNow();
-  await env.DB.prepare(
-    `INSERT INTO feeds (id, url, title, site_url, category, icon_url, last_fetched_at, last_error, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?7)
-     ON CONFLICT(url) DO UPDATE SET
-       title = excluded.title,
-       site_url = excluded.site_url,
-       category = excluded.category,
-       icon_url = excluded.icon_url,
-       last_fetched_at = excluded.last_fetched_at,
-       last_error = NULL,
-       updated_at = excluded.updated_at`,
-  ).bind(feedId, sourceUrl, parsed.title, parsed.siteUrl, category, parsed.iconUrl, now).run();
-
   const statements: D1PreparedStatement[] = [];
+  const stateStatements: D1PreparedStatement[] = [];
   for (const article of parsed.articles) {
     const articleId = (await sha256Hex(`${feedId}:${article.guid || article.url}`)).slice(0, 40);
     statements.push(
@@ -192,41 +181,82 @@ async function storeParsedFeed(env: Env, feedId: string, sourceUrl: string, cate
         article.feedContentHtml,
       ),
     );
+    if (markRead) {
+      stateStatements.push(
+        env.DB.prepare(
+          `INSERT INTO article_states (article_id, is_read, is_starred, updated_at)
+           VALUES (?1, 1, 0, ?2)
+           ON CONFLICT(article_id) DO NOTHING`,
+        ).bind(articleId, now),
+      );
+    }
   }
 
   for (let index = 0; index < statements.length; index += 50) {
     await env.DB.batch(statements.slice(index, index + 50));
   }
+  for (let index = 0; index < stateStatements.length; index += 50) {
+    await env.DB.batch(stateStatements.slice(index, index + 50));
+  }
   return statements.length;
 }
 
-async function refreshFeed(env: Env, feed: FeedRow, throwOnFailure: boolean): Promise<number> {
+async function storeParsedFeed(env: Env, feedId: string, sourceUrl: string, category: string, parsed: ParsedFeed): Promise<number> {
+  const now = isoNow();
+  await env.DB.prepare(
+    `INSERT INTO feeds (id, url, title, site_url, category, icon_url, last_fetched_at, last_error, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?7)
+     ON CONFLICT(url) DO UPDATE SET
+       title = excluded.title,
+       site_url = excluded.site_url,
+       category = excluded.category,
+       icon_url = excluded.icon_url,
+       last_fetched_at = excluded.last_fetched_at,
+       last_error = NULL,
+       updated_at = excluded.updated_at`,
+  ).bind(feedId, sourceUrl, parsed.title, parsed.siteUrl, category, parsed.iconUrl, now).run();
+  return storeParsedArticles(env, feedId, parsed);
+}
+
+async function refreshFeed(env: Env, feed: FeedRow, throwOnFailure: boolean): Promise<{ imported: number; ok: boolean }> {
   try {
     const parsed = await fetchFeed(feed.url);
-    return await storeParsedFeed(env, feed.id, feed.url, feed.category, parsed);
+    return { imported: await storeParsedFeed(env, feed.id, feed.url, feed.category, parsed), ok: true };
   } catch (cause) {
     const message = cause instanceof Error ? cause.message.slice(0, 500) : "ดึง RSS ไม่สำเร็จ";
     await env.DB.prepare("UPDATE feeds SET last_error = ?1, updated_at = ?2 WHERE id = ?3")
       .bind(message, isoNow(), feed.id)
       .run();
     if (throwOnFailure) throw new ApiProblem(422, message);
-    return 0;
+    return { imported: 0, ok: false };
   }
 }
 
-async function refreshAllFeeds(env: Env): Promise<number> {
-  const result = await env.DB.prepare("SELECT * FROM feeds WHERE enabled = 1 ORDER BY last_fetched_at ASC").all<FeedRow>();
-  let refreshed = 0;
+interface RefreshBatchResult {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  imported: number;
+}
+
+async function refreshFeedBatch(env: Env, requestedLimit = 8): Promise<RefreshBatchResult> {
+  const limit = Math.max(1, Math.min(10, requestedLimit));
+  const result = await env.DB.prepare(
+    "SELECT * FROM feeds WHERE enabled = 1 ORDER BY updated_at ASC LIMIT ?1",
+  ).bind(limit).all<FeedRow>();
+  let succeeded = 0;
+  let imported = 0;
   for (const feed of result.results) {
-    await refreshFeed(env, feed, false);
-    refreshed += 1;
+    const refreshed = await refreshFeed(env, feed, false);
+    if (refreshed.ok) succeeded += 1;
+    imported += refreshed.imported;
   }
-  await env.DB.prepare(
-    `DELETE FROM articles
-     WHERE COALESCE(published_at, fetched_at) < datetime('now', '-120 days')
-       AND id NOT IN (SELECT article_id FROM article_states WHERE is_starred = 1)`,
-  ).run();
-  return refreshed;
+  return {
+    attempted: result.results.length,
+    succeeded,
+    failed: result.results.length - succeeded,
+    imported,
+  };
 }
 
 async function handleSetup(request: Request, env: Env): Promise<Response> {
@@ -285,9 +315,59 @@ async function addFeed(request: Request, env: Env): Promise<Response> {
   return json({ feed: toFeed(row), importedArticles }, existing ? 200 : 201);
 }
 
+interface ArticleCursor {
+  sortAt: string;
+  id: string;
+}
+
+function encodeArticleCursor(cursor: ArticleCursor): string {
+  return btoa(JSON.stringify(cursor)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeArticleCursor(value: string | null): ArticleCursor | null {
+  if (!value) return null;
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+    const parsed = JSON.parse(atob(padded)) as Partial<ArticleCursor>;
+    if (typeof parsed.sortAt !== "string" || typeof parsed.id !== "string") return null;
+    return { sortAt: parsed.sortAt.slice(0, 40), id: parsed.id.slice(0, 80) };
+  } catch {
+    return null;
+  }
+}
+
 async function listArticles(url: URL, env: Env): Promise<Response> {
-  const requestedLimit = Number(url.searchParams.get("limit") || 300);
-  const limit = Math.max(1, Math.min(500, Number.isFinite(requestedLimit) ? requestedLimit : 300));
+  const feedId = (url.searchParams.get("feedId") || "").slice(0, 80);
+  const category = (url.searchParams.get("category") || "").slice(0, 100);
+  const readFilter = url.searchParams.get("read");
+  const starred = url.searchParams.get("starred") === "true";
+  const cursor = decodeArticleCursor(url.searchParams.get("cursor"));
+  const requestedLimit = Number(url.searchParams.get("limit") || (feedId ? 50 : 300));
+  const maximumLimit = feedId ? 100 : 500;
+  const limit = Math.max(1, Math.min(maximumLimit, Number.isFinite(requestedLimit) ? requestedLimit : 50));
+  const conditions = ["f.enabled = 1"];
+  const bindings: Array<string | number> = [];
+
+  const bind = (value: string | number): string => {
+    bindings.push(value);
+    return `?${bindings.length}`;
+  };
+
+  if (feedId) conditions.push(`a.feed_id = ${bind(feedId)}`);
+  if (category) conditions.push(`f.category = ${bind(category)}`);
+  if (readFilter === "unread") conditions.push("COALESCE(s.is_read, 0) = 0");
+  if (readFilter === "read") conditions.push("COALESCE(s.is_read, 0) = 1");
+  if (starred) conditions.push("COALESCE(s.is_starred, 0) = 1");
+  if (cursor) {
+    const sortAtBinding = bind(cursor.sortAt);
+    const idBinding = bind(cursor.id);
+    conditions.push(
+      `(COALESCE(a.published_at, a.fetched_at) < ${sortAtBinding}
+        OR (COALESCE(a.published_at, a.fetched_at) = ${sortAtBinding} AND a.id < ${idBinding}))`,
+    );
+  }
+
+  const limitBinding = bind(limit + 1);
   const result = await env.DB.prepare(
     `SELECT a.id, a.feed_id, a.url, a.title, a.summary, a.author, a.image_url,
        a.published_at, a.fetched_at,
@@ -300,11 +380,59 @@ async function listArticles(url: URL, env: Env): Promise<Response> {
      FROM articles a
      JOIN feeds f ON f.id = a.feed_id
      LEFT JOIN article_states s ON s.article_id = a.id
-     WHERE f.enabled = 1
-     ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
-     LIMIT ?1`,
-  ).bind(limit).all<ArticleRow>();
-  return json({ articles: result.results.map(toArticle) });
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
+     LIMIT ${limitBinding}`,
+  ).bind(...bindings).all<ArticleRow>();
+  const hasMore = result.results.length > limit;
+  const page = result.results.slice(0, limit);
+  const last = page.at(-1);
+  const nextCursor = hasMore && last
+    ? encodeArticleCursor({ sortAt: last.published_at || last.fetched_at, id: last.id })
+    : null;
+  return json({ articles: page.map(toArticle), hasMore, nextCursor });
+}
+
+async function backfillFeed(request: Request, env: Env, feedId: string): Promise<Response> {
+  const feed = await env.DB.prepare("SELECT * FROM feeds WHERE id = ?1 AND enabled = 1")
+    .bind(feedId)
+    .first<FeedRow>();
+  if (!feed) throw new ApiProblem(404, "ไม่พบแหล่งข่าวนี้");
+
+  const body = await readJson(request);
+  const requestedPages = Number(body.pages || 5);
+  const pages = Math.max(1, Math.min(5, Number.isFinite(requestedPages) ? requestedPages : 5));
+  let imported = 0;
+  let completedPages = 0;
+  const errors: string[] = [];
+  const seen = new Set<string>();
+
+  try {
+    const latest = await fetchFeed(feed.url);
+    for (const article of latest.articles) seen.add(article.guid || article.url);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message.slice(0, 300) : "ดึง RSS หน้าปัจจุบันไม่สำเร็จ";
+    throw new ApiProblem(422, message);
+  }
+
+  for (let page = 2; page <= pages + 1; page += 1) {
+    try {
+      const pageUrl = new URL(feed.url);
+      pageUrl.searchParams.set("paged", String(page));
+      const parsed = await fetchFeed(pageUrl.toString());
+      const unseenArticles = parsed.articles.filter((article) => !seen.has(article.guid || article.url));
+      if (!unseenArticles.length) break;
+      imported += await storeParsedArticles(env, feed.id, { ...parsed, articles: unseenArticles }, true);
+      for (const article of unseenArticles) seen.add(article.guid || article.url);
+      completedPages += 1;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message.slice(0, 300) : "ดึงข่าวย้อนหลังไม่สำเร็จ";
+      errors.push(`หน้า ${page}: ${message}`);
+      break;
+    }
+  }
+
+  return json({ ok: errors.length === 0, imported, completedPages, errors });
 }
 
 async function getArticleContent(env: Env, articleId: string): Promise<Response> {
@@ -427,8 +555,9 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === "/api/feeds" && request.method === "GET") return listFeeds(env);
   if (path === "/api/feeds" && request.method === "POST") return addFeed(request, env);
   if (path === "/api/feeds/refresh" && request.method === "POST") {
-    const refreshed = await refreshAllFeeds(env);
-    return json({ ok: true, refreshed });
+    const requestedLimit = Number(url.searchParams.get("limit") || 8);
+    const result = await refreshFeedBatch(env, requestedLimit);
+    return json({ ok: true, ...result });
   }
   if (path === "/api/articles" && request.method === "GET") return listArticles(url, env);
   if (path === "/api/articles/bulk-state" && request.method === "POST") return bulkState(request, env);
@@ -438,6 +567,19 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   const stateMatch = path.match(/^\/api\/articles\/([a-f0-9]+)\/state$/);
   if (stateMatch && request.method === "PATCH") return updateArticleState(request, env, stateMatch[1]);
+
+  const backfillMatch = path.match(/^\/api\/feeds\/([a-f0-9]+)\/backfill$/);
+  if (backfillMatch && request.method === "POST") return backfillFeed(request, env, backfillMatch[1]);
+
+  const refreshMatch = path.match(/^\/api\/feeds\/([a-f0-9]+)\/refresh$/);
+  if (refreshMatch && request.method === "POST") {
+    const feed = await env.DB.prepare("SELECT * FROM feeds WHERE id = ?1 AND enabled = 1")
+      .bind(refreshMatch[1])
+      .first<FeedRow>();
+    if (!feed) throw new ApiProblem(404, "ไม่พบแหล่งข่าวนี้");
+    const refreshed = await refreshFeed(env, feed, true);
+    return json({ ok: true, imported: refreshed.imported });
+  }
 
   const feedMatch = path.match(/^\/api\/feeds\/([a-f0-9]+)$/);
   if (feedMatch && request.method === "DELETE") {
@@ -460,6 +602,6 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): Promise<void> {
-    context.waitUntil(refreshAllFeeds(env));
+    context.waitUntil(refreshFeedBatch(env, 8));
   },
 } satisfies ExportedHandler<Env>;

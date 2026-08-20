@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  ArchiveRestore,
   Bookmark,
   BookmarkCheck,
   Check,
@@ -32,7 +33,7 @@ import { api, ApiError } from "./api";
 import { loadSnapshot, saveSnapshot } from "./cache";
 import { canStartSwipe, resolveSwipe, type SwipeStart } from "./gestures";
 import { READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN, readerFontSizeFromStorage } from "./preferences";
-import type { Article, ArticleContent, Feed, LibraryView } from "./types";
+import type { Article, ArticleContent, ArticleReadFilter, Feed, LibraryView } from "./types";
 import { feedColor, fullDate, initials, relativeDate } from "./utils";
 
 type Stage = "checking" | "onboarding" | "ready" | "failed";
@@ -46,7 +47,15 @@ function App() {
   const [view, setView] = useState<LibraryView>(DEFAULT_VIEW);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [hideRead, setHideRead] = useState(() => localStorage.getItem("leafline.hideRead") === "true");
+  const [readFilter, setReadFilter] = useState<ArticleReadFilter>(() => {
+    const saved = localStorage.getItem("leafline.readFilter");
+    if (saved === "read" || saved === "unread") return saved;
+    return localStorage.getItem("leafline.hideRead") === "true" ? "unread" : "all";
+  });
+  const [feedArticles, setFeedArticles] = useState<Article[]>([]);
+  const [feedCursor, setFeedCursor] = useState<string | null>(null);
+  const [feedHasMore, setFeedHasMore] = useState(false);
+  const [feedLoading, setFeedLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -127,9 +136,66 @@ function App() {
     localStorage.setItem("leafline.readerFontSize", String(readerFontSize));
   }, [readerFontSize]);
 
+  useEffect(() => {
+    localStorage.setItem("leafline.readFilter", readFilter);
+    localStorage.setItem("leafline.hideRead", String(readFilter === "unread"));
+  }, [readFilter]);
+
+  useEffect(() => {
+    if (stage !== "ready" || view.kind !== "feed") {
+      setFeedArticles([]);
+      setFeedCursor(null);
+      setFeedHasMore(false);
+      setFeedLoading(false);
+      return;
+    }
+
+    let current = true;
+    setFeedArticles([]);
+    setFeedCursor(null);
+    setFeedHasMore(false);
+    setFeedLoading(true);
+    void api.articlePage({ feedId: view.id, read: readFilter, limit: 50 })
+      .then((page) => {
+        if (!current) return;
+        setFeedArticles(page.articles);
+        setFeedCursor(page.nextCursor);
+        setFeedHasMore(page.hasMore);
+      })
+      .catch(() => {
+        if (current) notify("โหลดคลังข่าวของแหล่งนี้ไม่สำเร็จ");
+      })
+      .finally(() => {
+        if (current) setFeedLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [notify, readFilter, stage, view]);
+
+  const loadMoreFeed = async () => {
+    if (view.kind !== "feed" || !feedCursor || feedLoading) return;
+    setFeedLoading(true);
+    try {
+      const page = await api.articlePage({ feedId: view.id, read: readFilter, limit: 50, cursor: feedCursor });
+      setFeedArticles((current) => {
+        const existing = new Set(current.map((article) => article.id));
+        return [...current, ...page.articles.filter((article) => !existing.has(article.id))];
+      });
+      setFeedCursor(page.nextCursor);
+      setFeedHasMore(page.hasMore);
+    } catch {
+      notify("โหลดข่าวย้อนหลังเพิ่มไม่สำเร็จ");
+    } finally {
+      setFeedLoading(false);
+    }
+  };
+
+  const activeArticles = view.kind === "feed" ? feedArticles : articles;
+
   const selected = useMemo(
-    () => articles.find((article) => article.id === selectedId) || null,
-    [articles, selectedId],
+    () => feedArticles.find((article) => article.id === selectedId) || articles.find((article) => article.id === selectedId) || null,
+    [articles, feedArticles, selectedId],
   );
 
   const visibleArticles = useMemo(() => {
@@ -137,18 +203,19 @@ function App() {
     today.setHours(0, 0, 0, 0);
     const query = search.trim().toLocaleLowerCase("th");
 
-    return articles.filter((article) => {
+    return activeArticles.filter((article) => {
       if (view.kind === "today" && new Date(article.publishedAt || article.fetchedAt) < today) return false;
       if (view.kind === "starred" && !article.isStarred) return false;
       if (view.kind === "category" && article.feedCategory !== view.id) return false;
       if (view.kind === "feed" && article.feedId !== view.id) return false;
-      if (hideRead && article.isRead && article.id !== selectedId) return false;
+      if (readFilter === "unread" && article.isRead && article.id !== selectedId) return false;
+      if (readFilter === "read" && !article.isRead && article.id !== selectedId) return false;
       if (query && !`${article.title} ${article.summary} ${article.feedTitle}`.toLocaleLowerCase("th").includes(query)) {
         return false;
       }
       return true;
     });
-  }, [articles, hideRead, search, selectedId, view]);
+  }, [activeArticles, readFilter, search, selectedId, view]);
 
   const selectedVisibleIndex = selectedId
     ? visibleArticles.findIndex((article) => article.id === selectedId)
@@ -164,13 +231,18 @@ function App() {
 
   const changeArticleState = async (articleId: string, patch: { isRead?: boolean; isStarred?: boolean }) => {
     const previous = articles;
+    const previousFeedArticles = feedArticles;
     setArticles((current) =>
+      current.map((article) => (article.id === articleId ? { ...article, ...patch } : article)),
+    );
+    setFeedArticles((current) =>
       current.map((article) => (article.id === articleId ? { ...article, ...patch } : article)),
     );
     try {
       await api.updateState(articleId, patch);
     } catch {
       setArticles(previous);
+      setFeedArticles(previousFeedArticles);
       notify("ซิงก์ไม่สำเร็จ กรุณาลองอีกครั้ง");
     }
   };
@@ -179,6 +251,7 @@ function App() {
     const ids = visibleArticles.filter((article) => !article.isRead).map((article) => article.id);
     if (!ids.length) return;
     setArticles((current) => current.map((article) => (ids.includes(article.id) ? { ...article, isRead: true } : article)));
+    setFeedArticles((current) => current.map((article) => (ids.includes(article.id) ? { ...article, isRead: true } : article)));
     try {
       await api.bulkRead(ids);
       notify(`ทำเครื่องหมายอ่านแล้ว ${ids.length} ข่าว`);
@@ -190,15 +263,9 @@ function App() {
 
   const selectView = (next: LibraryView) => {
     setView(next);
+    setSelectedId(null);
     setSidebarOpen(false);
     setReaderOpen(false);
-  };
-
-  const toggleHideRead = () => {
-    setHideRead((current) => {
-      localStorage.setItem("leafline.hideRead", String(!current));
-      return !current;
-    });
   };
 
   const updateLoadedContent = useCallback((articleId: string, content: ArticleContent) => {
@@ -275,12 +342,14 @@ function App() {
             <button className="icon-button" onClick={() => setDark((value) => !value)} aria-label="สลับธีม">
               {dark ? <Sun size={19} /> : <Moon size={19} />}
             </button>
-            <button className={`text-button ${hideRead ? "active" : ""}`} onClick={toggleHideRead}>
-              <Check size={16} />
-              <span className="desktop-label">ซ่อนที่อ่านแล้ว</span>
-            </button>
           </div>
         </header>
+
+        <div className="article-filter" role="group" aria-label="กรองสถานะการอ่าน">
+          <button className={readFilter === "all" ? "active" : ""} onClick={() => setReadFilter("all")}>ทั้งหมด</button>
+          <button className={readFilter === "unread" ? "active" : ""} onClick={() => setReadFilter("unread")}><Circle size={14} />ยังไม่อ่าน</button>
+          <button className={readFilter === "read" ? "active" : ""} onClick={() => setReadFilter("read")}><Check size={14} />อ่านแล้ว</button>
+        </div>
 
         <div className="search-row">
           <div className="search-box">
@@ -301,21 +370,31 @@ function App() {
         </div>
 
         <div className="list-meta">
-          <span>{visibleArticles.length} เรื่อง</span>
+          <span>{visibleArticles.length} เรื่อง{view.kind === "feed" && feedHasMore ? " · ยังมีอีก" : ""}</span>
           <span className="sync-status"><span className="online-dot" /> ซิงก์แล้ว {lastSynced ? relativeDate(lastSynced.toISOString()) : ""}</span>
         </div>
 
         <section className="article-list" aria-label="รายการข่าว">
           {visibleArticles.length ? (
-            visibleArticles.map((article) => (
-              <ArticleRow
-                key={article.id}
-                article={article}
-                selected={article.id === selectedId}
-                onSelect={() => chooseArticle(article)}
-                onStar={() => void changeArticleState(article.id, { isStarred: !article.isStarred })}
-              />
-            ))
+            <>
+              {visibleArticles.map((article) => (
+                <ArticleRow
+                  key={article.id}
+                  article={article}
+                  selected={article.id === selectedId}
+                  onSelect={() => chooseArticle(article)}
+                  onStar={() => void changeArticleState(article.id, { isStarred: !article.isStarred })}
+                />
+              ))}
+              {view.kind === "feed" && feedHasMore && (
+                <button className="load-more-button" onClick={() => void loadMoreFeed()} disabled={feedLoading}>
+                  {feedLoading ? <LoaderCircle className="spin" size={17} /> : <ArchiveRestore size={17} />}
+                  {feedLoading ? "กำลังโหลด…" : "โหลดข่าวย้อนหลังเพิ่มเติม"}
+                </button>
+              )}
+            </>
+          ) : feedLoading ? (
+            <div className="feed-loading"><LoaderCircle className="spin" size={22} />กำลังโหลดคลังข่าว…</div>
           ) : (
             <EmptyList hasFeeds={feeds.length > 0} onAdd={() => setAddOpen(true)} />
           )}
@@ -337,7 +416,7 @@ function App() {
 
       <nav className="mobile-nav">
         <button className={view.kind === "inbox" ? "active" : ""} onClick={() => selectView(DEFAULT_VIEW)}><Inbox size={20} /><span>ทั้งหมด</span></button>
-        <button className={hideRead ? "active" : ""} onClick={toggleHideRead}><Circle size={20} /><span>ยังไม่อ่าน</span></button>
+        <button className={readFilter === "unread" ? "active" : ""} onClick={() => setReadFilter((current) => current === "unread" ? "all" : "unread")}><Circle size={20} /><span>ยังไม่อ่าน</span></button>
         <button className={view.kind === "starred" ? "active" : ""} onClick={() => selectView({ kind: "starred", label: "บันทึกไว้" })}><Bookmark size={20} /><span>บันทึก</span></button>
         <button onClick={() => setSettingsOpen(true)}><Settings size={20} /><span>ตั้งค่า</span></button>
       </nav>
@@ -360,8 +439,25 @@ function App() {
           onReaderFontSizeChange={setReaderFontSize}
           onClose={() => setSettingsOpen(false)}
           onRefresh={async () => {
-            const result = await api.refreshFeeds();
-            notify(`อัปเดต RSS แล้ว ${result.refreshed} แหล่ง`);
+            const passes = Math.max(1, Math.ceil(feeds.length / 8));
+            let succeeded = 0;
+            let failed = 0;
+            for (let pass = 0; pass < passes; pass += 1) {
+              const result = await api.refreshFeeds(8);
+              succeeded += result.succeeded;
+              failed += result.failed;
+            }
+            notify(`ตรวจแล้ว ${succeeded + failed} แหล่ง · สำเร็จ ${succeeded}${failed ? ` · มีปัญหา ${failed}` : ""}`);
+            await loadLibrary(true);
+          }}
+          onRefreshFeed={async (feedId) => {
+            const result = await api.refreshFeed(feedId);
+            notify(`อัปเดตแล้ว · พบ ${result.imported} ข่าวใน RSS`);
+            await loadLibrary(true);
+          }}
+          onBackfill={async (feedId) => {
+            const result = await api.backfillFeed(feedId, 5);
+            notify(`นำเข้าข่าวย้อนหลัง ${result.completedPages} หน้า · ${result.imported} รายการ`);
             await loadLibrary(true);
           }}
           onDelete={async (feedId) => {
@@ -746,17 +842,20 @@ function AddFeedModal({ categories, onClose, onAdded }: { categories: string[]; 
   );
 }
 
-function SettingsModal({ feeds, readerFontSize, onReaderFontSizeChange, onClose, onRefresh, onDelete, onDisconnect }: {
+function SettingsModal({ feeds, readerFontSize, onReaderFontSizeChange, onClose, onRefresh, onRefreshFeed, onBackfill, onDelete, onDisconnect }: {
   feeds: Feed[];
   readerFontSize: number;
   onReaderFontSizeChange: (size: number) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
+  onRefreshFeed: (feedId: string) => Promise<void>;
+  onBackfill: (feedId: string) => Promise<void>;
   onDelete: (feedId: string) => Promise<void>;
   onDisconnect: () => void;
 }) {
   const [tab, setTab] = useState<"devices" | "reading" | "feeds">("devices");
   const [busy, setBusy] = useState(false);
+  const [busyFeedId, setBusyFeedId] = useState("");
   const [copied, setCopied] = useState("");
   const [syncToken, setSyncToken] = useState(api.token);
   const pairingLink = api.pairingLink();
@@ -802,9 +901,9 @@ function SettingsModal({ feeds, readerFontSize, onReaderFontSizeChange, onClose,
         </section>
       ) : (
         <div className="feed-settings">
-          <div className="feed-settings-head"><p>{feeds.length} แหล่งข่าว · อัปเดตอัตโนมัติตาม Cron</p><button className="secondary-button" disabled={busy} onClick={() => { setBusy(true); void onRefresh().finally(() => setBusy(false)); }}><RefreshCw className={busy ? "spin" : ""} size={16} />อัปเดตตอนนี้</button></div>
+          <div className="feed-settings-head"><p>{feeds.length} แหล่งข่าว · ปกติ {feeds.filter((feed) => !feed.lastError).length} · มีปัญหา {feeds.filter((feed) => feed.lastError).length}</p><button className="secondary-button" disabled={busy} onClick={() => { setBusy(true); void onRefresh().finally(() => setBusy(false)); }}><RefreshCw className={busy ? "spin" : ""} size={16} />ตรวจทุกแหล่งตอนนี้</button></div>
           <div className="feed-settings-list">
-            {feeds.map((feed) => <div key={feed.id}><span className="feed-avatar" style={{ background: feedColor(feed.title) }}>{initials(feed.title)}</span><div><strong>{feed.title}</strong><small>{feed.category} · {feed.lastError ? `ผิดพลาด: ${feed.lastError}` : `อัปเดต ${relativeDate(feed.lastFetchedAt)}`}</small></div><button className="icon-button danger" onClick={() => { if (confirm(`ลบ ${feed.title} และข่าวทั้งหมดจากแหล่งนี้?`)) void onDelete(feed.id); }}><Trash2 size={17} /></button></div>)}
+            {feeds.map((feed) => <div key={feed.id}><span className="feed-avatar" style={{ background: feedColor(feed.title) }}>{initials(feed.title)}</span><div><strong>{feed.title}</strong><small className={feed.lastError ? "feed-error" : ""}>{feed.category} · {feed.lastError ? `ผิดพลาด: ${feed.lastError}` : `อัปเดต ${relativeDate(feed.lastFetchedAt)}`}</small></div><div className="feed-setting-actions"><button className="icon-button" title="อัปเดตแหล่งนี้" disabled={Boolean(busyFeedId)} onClick={() => { setBusyFeedId(feed.id); void onRefreshFeed(feed.id).finally(() => setBusyFeedId("")); }}><RefreshCw className={busyFeedId === feed.id ? "spin" : ""} size={16} /></button><button className="icon-button" title="นำเข้าข่าวย้อนหลัง 5 หน้า" disabled={Boolean(busyFeedId)} onClick={() => { setBusyFeedId(feed.id); void onBackfill(feed.id).finally(() => setBusyFeedId("")); }}><ArchiveRestore size={16} /></button><button className="icon-button danger" title="ลบแหล่งข่าว" onClick={() => { if (confirm(`ลบ ${feed.title} และข่าวทั้งหมดจากแหล่งนี้?`)) void onDelete(feed.id); }}><Trash2 size={17} /></button></div></div>)}
           </div>
         </div>
       )}

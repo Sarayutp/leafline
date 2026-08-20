@@ -36,6 +36,22 @@ export interface ArticleContent {
   fetchedAt: string | null;
 }
 
+export type ArticleReadFilter = "all" | "unread" | "read";
+
+export interface ArticlePage {
+  articles: Article[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export interface RefreshResult {
+  ok: boolean;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  imported: number;
+}
+
 export type LibraryView =
   | { kind: "inbox"; label: string }
   | { kind: "today"; label: string }

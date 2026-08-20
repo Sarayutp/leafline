@@ -116,6 +116,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .icon-button.danger:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .text-button { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 9px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; font-size: 11px; cursor: pointer; }
 .text-button:hover, .text-button.active { color: var(--green); background: var(--green-soft); }
+.article-filter { display: flex; align-self: flex-start; gap: 3px; margin: 0 21px 3px; padding: 3px; border-radius: 10px; background: var(--surface-soft); }
+.article-filter button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 0 11px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 10px; cursor: pointer; }
+.article-filter button.active { color: var(--text); background: var(--surface-strong); box-shadow: 0 2px 7px rgb(34 50 33 / 8%); font-weight: 700; }
 .search-row { display: flex; align-items: center; gap: 5px; padding: 7px 17px 10px 21px; }
 .search-box { display: flex; align-items: center; flex: 1; gap: 9px; height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 11px; color: var(--faint); background: var(--surface-strong); }
 .search-box:focus-within { border-color: var(--green); box-shadow: 0 0 0 3px rgb(76 121 87 / 9%); }
@@ -126,6 +129,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .sync-status { display: flex; align-items: center; gap: 5px; }
 .online-dot { display: inline-block; flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: #65a471; box-shadow: 0 0 0 3px rgb(101 164 113 / 13%); }
 .article-list { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.feed-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 150px; color: var(--muted); font-size: 11px; }
+.load-more-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 30px); min-height: 42px; margin: 15px; border: 1px solid var(--line); border-radius: 10px; color: var(--green); background: var(--surface-strong); font-size: 11px; font-weight: 700; cursor: pointer; }
+.load-more-button:hover { border-color: var(--green); background: var(--green-soft); }
+.load-more-button:disabled { opacity: .55; cursor: default; }
 .article-row { position: relative; padding: 18px 46px 18px 22px; border-top: 1px solid var(--line); cursor: pointer; transition: background .16s ease; }
 .article-row:hover, .article-row.selected { background: var(--surface-soft); }
 .article-row.selected::before { position: absolute; top: 14px; bottom: 14px; left: 0; width: 3px; border-radius: 0 4px 4px 0; background: var(--green); content: ""; }
@@ -289,6 +296,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .feed-settings-list > div > div { display: flex; flex-direction: column; min-width: 0; }
 .feed-settings-list strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .feed-settings-list small { overflow: hidden; margin-top: 2px; color: var(--muted); font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.feed-settings-list small.feed-error { color: var(--danger); }
+.feed-setting-actions { flex-direction: row !important; align-items: center; }
+.feed-setting-actions .icon-button { width: 31px; height: 31px; }
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 150; display: flex; align-items: center; gap: 8px; max-width: 360px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--surface-strong); box-shadow: var(--shadow); font-size: 11px; animation: toast-in .25s ease; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
@@ -319,6 +329,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .topbar-title h1 { font-size: 20px; }
   .topbar-actions .text-button { width: 36px; padding: 0; justify-content: center; }
   .desktop-label { display: none; }
+  .article-filter { margin: 0 14px 3px; }
+  .article-filter button { flex: 1; min-width: 0; padding-inline: 9px; }
   .search-row { padding: 6px 11px 10px 14px; }
   .list-meta { padding-inline: 15px; }
   .article-row { padding: 16px 45px 16px 15px; }

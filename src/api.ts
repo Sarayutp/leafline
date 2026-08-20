@@ -1,4 +1,14 @@
-import type { Article, ArticleContent, Feed, FeedResponse, SetupResponse, SetupStatus } from "./types";
+import type {
+  Article,
+  ArticleContent,
+  ArticlePage,
+  ArticleReadFilter,
+  Feed,
+  FeedResponse,
+  RefreshResult,
+  SetupResponse,
+  SetupStatus,
+} from "./types";
 
 const API_URL_KEY = "leafline.apiUrl";
 const TOKEN_KEY = "leafline.syncToken";
@@ -104,8 +114,26 @@ class LeaflineApi {
   }
 
   async articles(): Promise<Article[]> {
-    const result = await this.request<{ articles: Article[] }>("/api/articles?limit=500");
+    const result = await this.articlePage({ limit: 500 });
     return result.articles;
+  }
+
+  articlePage(options: {
+    limit?: number;
+    feedId?: string;
+    category?: string;
+    read?: ArticleReadFilter;
+    starred?: boolean;
+    cursor?: string | null;
+  } = {}): Promise<ArticlePage> {
+    const params = new URLSearchParams();
+    params.set("limit", String(options.limit || 50));
+    if (options.feedId) params.set("feedId", options.feedId);
+    if (options.category) params.set("category", options.category);
+    if (options.read && options.read !== "all") params.set("read", options.read);
+    if (options.starred) params.set("starred", "true");
+    if (options.cursor) params.set("cursor", options.cursor);
+    return this.request<ArticlePage>(`/api/articles?${params.toString()}`);
   }
 
   articleContent(articleId: string): Promise<ArticleContent> {
@@ -137,8 +165,19 @@ class LeaflineApi {
     });
   }
 
-  refreshFeeds(): Promise<{ ok: boolean; refreshed: number }> {
-    return this.request<{ ok: boolean; refreshed: number }>("/api/feeds/refresh", { method: "POST" });
+  refreshFeeds(limit = 8): Promise<RefreshResult> {
+    return this.request<RefreshResult>(`/api/feeds/refresh?limit=${limit}`, { method: "POST" });
+  }
+
+  refreshFeed(feedId: string): Promise<{ ok: boolean; imported: number }> {
+    return this.request<{ ok: boolean; imported: number }>(`/api/feeds/${encodeURIComponent(feedId)}/refresh`, { method: "POST" });
+  }
+
+  backfillFeed(feedId: string, pages = 5): Promise<{ ok: boolean; imported: number; completedPages: number; errors: string[] }> {
+    return this.request<{ ok: boolean; imported: number; completedPages: number; errors: string[] }>(
+      `/api/feeds/${encodeURIComponent(feedId)}/backfill`,
+      { method: "POST", body: JSON.stringify({ pages }) },
+    );
   }
 }
 
